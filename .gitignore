@@ -1,0 +1,25 @@
+# firmware build output
+firmware/build/
+build/
+out/
+*.elf
+*.bin
+*.dis
+*.map
+*.hex
+# keep released firmware
+!firmware/release/*.uf2
+
+# KiCad backups / local state
+*-backups/
+*.kicad_prl
+fp-info-cache
+_autosave-*
+*.lck
+
+# IDE / OS
+.idea/
+.vscode/
+__pycache__/
+.DS_Store
+Thumbs.db

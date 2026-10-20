@@ -1,0 +1,13 @@
+// Bluepad32 settings (emulates ESP-IDF "menuconfig")
+#pragma once
+
+#define CONFIG_BLUEPAD32_MAX_DEVICES 4
+#define CONFIG_BLUEPAD32_MAX_ALLOWLIST 4
+#define CONFIG_BLUEPAD32_GAP_SECURITY 1
+#define CONFIG_BLUEPAD32_ENABLE_BLE_BY_DEFAULT 1
+
+#define CONFIG_BLUEPAD32_PLATFORM_CUSTOM
+#define CONFIG_TARGET_PICO_W
+
+// 0 = none, 1 = error, 2 = info (debug log goes to UART0 on GP0, 115200)
+#define CONFIG_BLUEPAD32_LOG_LEVEL 2

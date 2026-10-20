@@ -1,0 +1,19 @@
+Ref,Part,Value / type,Qty,Used on,Supplier,Notes
+U1,Raspberry Pi Pico 2 WH,RP2350 + CYW43439 (Wi-Fi/Bluetooth) with headers,1,both,kamami_pl,Plugged into two female headers
+,Female pin header,1x20 (cut from 1x40),2,both,elektronika-plus,Socket for the Pico
+J_ATX,ATX 24-pin PCB header,Molex Mini-Fit Jr 5566-24A2 (with snap-in pegs),1,both,zielony7210,Latch faces the wall; pin 1 at the FRONT end; rows 5.5 mm apart
+Q1,NPN transistor,2N2222 (TO-92),1,both,,Pulls PS_ON to GND; flat side toward the Pico
+R1,Resistor,1 kΩ,1,both,elektronika-plus,GP15 -> Q1 base (bought x50)
+R2,Resistor,10 kΩ,1,both,elektronika-plus,Q1 base -> emitter (bought x50)
+R3,Resistor,220 Ω,1,both,,TPM pin 9 -> GP2
+D1,Schottky diode,1N5819,1,both,elektronika-plus,5VSB -> Pico VSYS; stripe toward the Pico
+J1,Pin header,1x3 male goldpin,1,both,elektronika-plus,Button: LED+ / C / GND
+J2,Pin header,1x1 male goldpin,1,both,elektronika-plus,BC-250 TPM header pin 9
+J4,Pin header,1x2 male goldpin,1,both,elektronika-plus,To BC-250 J4003: tach / PWM (second fan)
+J3,Fan header,1x4 male goldpin (or 4-pin fan header),1,both,elektronika-plus,Second fan: PWM / tach / 12V / GND
+,Perfboard,70x90 mm double-sided,1,perfboard,kamami_pl,24 cols x 30 rows
+,PCB,57.5 x 72 mm 2-layer 1.6 mm (pcb/gerbers v9),1,pcb,JLCPCB / PCBWay / Aisler,Order with Gerbers v9 only
+,Screws,M3 + washers,4,both,,Corner mounting on the case floor
+,Push button,16 mm metal momentary with LED ring,1,both,,Case button: NO contact + LED
+,Dupont wires,female-female / female-male,1 set,both,kamami_pl,To button / TPM / J4003 / fan
+,USB cable,Micro-USB -> USB-A data cable ~50 cm,1,both,,Pico -> BC-250 (controllers + power key)
