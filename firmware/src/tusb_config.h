@@ -10,7 +10,10 @@
 // Standard class: one HID interface (System Control -> Power key)
 #define CFG_TUD_HID             MAX_PADS   // power key, or one HID per native controller
 #define CFG_TUD_HID_EP_BUFSIZE  64
-#define CFG_TUD_CDC             0
+#define CFG_TUD_CDC             1          // v5: log port, only in the idle identity
+#define CFG_TUD_CDC_RX_BUFSIZE  64
+#define CFG_TUD_CDC_TX_BUFSIZE  512
+#define CFG_TUD_CDC_EP_BUFSIZE  64
 #define CFG_TUD_MSC             0
 #define CFG_TUD_MIDI            0
 #define CFG_TUD_VENDOR          0

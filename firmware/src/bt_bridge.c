@@ -5,6 +5,10 @@
 #include <btstack.h>
 #include <uni.h>
 
+#include "config.h"
+#include "pico/cyw43_arch.h"
+#include "pico/time.h"
+
 #include "sdkconfig.h"
 
 #ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
@@ -31,6 +35,9 @@ typedef struct {
 } bt_slot_t;
 
 static bt_slot_t bs[MAX_PADS];
+
+static volatile uint32_t h_ready_events;     // health check: a controller became ready
+static void bt_note_ready(void) { h_ready_events++; }
 
 static const uint8_t fetch_ds5[] = {0x09, 0x20, 0x05};   // pairing (MAC), firmware, calibration
 static const uint8_t fetch_ds4[] = {0x05, 0xA3};         // calibration (BT layout), firmware
@@ -253,14 +260,18 @@ static uni_error_t p_on_device_discovered(bd_addr_t addr, const char* name, uint
 
 static void p_on_device_connected(uni_hid_device_t* d) { ARG_UNUSED(d); }
 
-static void p_on_device_disconnected(uni_hid_device_t* d) {
-    int i = slot_of(d);
-    if (i < 0) return;
+static void p_on_device_disconnected_slot(int i) {
     pads[i].used = false;
     pads[i].fetching = false;
     ring_clear(&pads[i].to_usb);
     memset(&bs[i], 0, sizeof(bs[i]));
     logi("bc250: controller in slot %d disconnected\n", i);
+}
+
+static void p_on_device_disconnected(uni_hid_device_t* d) {
+    int i = slot_of(d);
+    if (i < 0) return;
+    p_on_device_disconnected_slot(i);
 }
 
 static uni_error_t p_on_device_ready(uni_hid_device_t* d) {
@@ -301,6 +312,7 @@ static uni_error_t p_on_device_ready(uni_hid_device_t* d) {
 
     p->used = true;
     bt_ev_connected++;
+    bt_note_ready();
     logi("bc250: controller ready in slot %d (kind %d, pid %04x)\n", i, p->kind, p->pid);
     return UNI_ERROR_SUCCESS;
 }
@@ -346,87 +358,260 @@ static struct uni_platform platform = {
     .get_property = p_get_property,
 };
 
-// ------------------------------------------------------------------ health check
-// The radio has a separate Bluetooth core. If it (or the BTstack run loop) locks up, the button
-// still works but no controller can reach us. Every BT_HEALTH_PERIOD_MS we send HCI
-// "Read Local Version Information" (no side effects) and wait for its Command Complete event.
+// ------------------------------------------------------------------ health check + recovery (v5)
+// Every BT_HEALTH_PERIOD_MS we send HCI "Read Scan Enable" (harmless). The answer proves the radio is
+// alive AND tells whether page scan is on, i.e. whether a paired controller can connect at all.
+// We also watch incoming connection attempts: a controller that keeps knocking but never becomes
+// ready means the stack is stuck even though the radio answers.
+// Recovery = restart only Bluetooth: power the BTstack stack off, reset the CYW43 chip (reloads its
+// firmware), run Bluepad32's setup again. The PSU line (GP15) is never touched, so the board keeps running.
+
+#define OPC_READ_SCAN_ENABLE HCI_OPCODE(OGF_CONTROLLER_BASEBAND, 0x19)
+static const hci_cmd_t cmd_read_scan_enable = {OPC_READ_SCAN_ENABLE, ""};
 
 static btstack_packet_callback_registration_t health_cb_reg;
-static volatile uint32_t health_answers;       // incremented by the HCI event handler
-static uint32_t health_seen_answers;
-static bool health_waiting;
-static uint32_t health_sent_at, health_last_try, health_last_ok, health_not_ready_since;
-static uint8_t health_misses;
-static uint32_t health_pings, health_fails_total;
+static volatile uint32_t h_answers;          // command-complete for our ping
+static volatile uint8_t h_scan;              // last scan-enable value (bit 1 = page scan)
+static volatile uint32_t h_conn_events;      // incoming connection requests / completions
+static volatile uint32_t h_conn_failed;      // completions with error, or ACL dropped before ready
+static volatile bool h_acl_pending;          // ACL up, HID not ready yet
+static volatile uint32_t h_acl_up_at;
+
+static uint32_t h_seen_answers, h_sent_at, h_last_try, h_last_ok, h_not_ready_since;
+static bool h_waiting;
+static uint8_t h_misses, h_page_off_count;
+static uint32_t h_pings, h_fails_total;
+
+// connection-attempt window
+static uint32_t h_win_start, h_win_events0, h_win_failed0, h_win_ready0;
+
+// recovery state
+typedef enum { REC_IDLE, REC_HALTING, REC_STARTING } rec_state_t;
+static rec_state_t rec = REC_IDLE;
+static uint32_t rec_since, rec_window_start;
+static uint8_t rec_in_window;
+static uint32_t rec_total, rec_ok_total;
+static bool bt_gave_up;
+static const char* rec_reason = "";
+
+static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 
 static void health_hci_handler(uint8_t packet_type, uint16_t channel, uint8_t* packet, uint16_t size) {
     ARG_UNUSED(channel);
     ARG_UNUSED(size);
     if (packet_type != HCI_EVENT_PACKET) return;
-    if (hci_event_packet_get_type(packet) == HCI_EVENT_COMMAND_COMPLETE &&
-        hci_event_command_complete_get_command_opcode(packet) == HCI_OPCODE_HCI_READ_LOCAL_VERSION_INFORMATION)
-        health_answers++;
+    bd_addr_t a;
+    switch (hci_event_packet_get_type(packet)) {
+        case HCI_EVENT_COMMAND_COMPLETE:
+            if (hci_event_command_complete_get_command_opcode(packet) == OPC_READ_SCAN_ENABLE) {
+                const uint8_t* r = hci_event_command_complete_get_return_parameters(packet);
+                h_scan = (r[0] == 0) ? r[1] : 0xFF;
+                h_answers++;
+            }
+            break;
+        case HCI_EVENT_CONNECTION_REQUEST:
+            hci_event_connection_request_get_bd_addr(packet, a);
+            h_conn_events++;
+            logi("bc250: BT connection request from %s\n", bd_addr_to_str(a));
+            break;
+        case HCI_EVENT_CONNECTION_COMPLETE: {
+            uint8_t st = hci_event_connection_complete_get_status(packet);
+            hci_event_connection_complete_get_bd_addr(packet, a);
+            h_conn_events++;
+            if (st) {
+                h_conn_failed++;
+                logi("bc250: BT connection from %s failed, status 0x%02x\n", bd_addr_to_str(a), st);
+            } else {
+                h_acl_pending = true;
+                h_acl_up_at = ms_now();
+                logi("bc250: BT link up with %s\n", bd_addr_to_str(a));
+            }
+            break;
+        }
+        case HCI_EVENT_DISCONNECTION_COMPLETE:
+            logi("bc250: BT link closed, reason 0x%02x\n", hci_event_disconnection_complete_get_reason(packet));
+            if (h_acl_pending) h_conn_failed++;   // dropped before the controller became ready
+            h_acl_pending = false;
+            break;
+        default:
+            break;
+    }
 }
 
-static bool health_fail(uint32_t t, const char* why) {
-    (void)t;
-    health_fails_total++;
-    logi("bc250: BT health: %s\n", why);
-    return false;
+static void health_reset_counters(uint32_t t) {
+    h_waiting = false;
+    h_misses = 0;
+    h_page_off_count = 0;
+    h_last_ok = t;
+    h_last_try = t;
+    h_not_ready_since = 0;
+    h_acl_pending = false;
+    h_win_start = 0;
 }
 
+bool bt_restarting(void) { return rec != REC_IDLE; }
+
+static void bt_restart(uint32_t t, const char* why) {
+    if (rec != REC_IDLE || bt_gave_up) return;
+    if (!rec_window_start || t - rec_window_start >= BT_RESTART_WINDOW_MS) {
+        rec_window_start = t;
+        rec_in_window = 0;
+    }
+    if (rec_in_window >= BT_RESTART_MAX_IN_WINDOW) {
+        logi("bc250: BT restart: %s - but already restarted %u times recently, giving up (Pico restarts after power-off)\n",
+             why, rec_in_window);
+        bt_gave_up = true;
+        return;
+    }
+    rec_in_window++;
+    rec_total++;
+    rec_reason = why;
+    logi("bc250: BT restart #%lu: %s - stopping Bluetooth\n", (unsigned long)rec_total, why);
+    for (int i = 0; i < MAX_PADS; i++)
+        if (bs[i].dev) uni_hid_device_disconnect(bs[i].dev);
+    hci_power_control(HCI_POWER_OFF);
+    rec = REC_HALTING;
+    rec_since = t;
+}
+
+void bt_restart_now(void) { bt_restart(ms_now(), "requested over the log port"); }
+
+static bool health_fail(const char* why) {
+    h_fails_total++;
+    bt_restart(ms_now(), why);
+    return !bt_gave_up;
+}
+
+// Returns false once Bluetooth is beyond self-repair (main.c then restarts the Pico, PSU off only).
 bool bt_health_task(uint32_t t) {
-    // Bluepad32 setup still running (it treats any HCI event as "next step", so don't ping yet)
+    // ---- recovery in progress
+    if (rec == REC_HALTING) {
+        if (hci_get_state() == HCI_STATE_OFF) {
+            logi("bc250: BT restart: stack off after %lu ms, resetting the radio chip\n", (unsigned long)(t - rec_since));
+            cyw43_deinit(&cyw43_state);   // WL_REG_ON low; next use powers it up and reloads the firmware
+            for (int i = 0; i < MAX_PADS; i++)   // in case a disconnect callback never came
+                if (pads[i].used || bs[i].dev) p_on_device_disconnected_slot(i);
+            uni_bt_setup();               // Bluepad32 setup again (supports repeated calls) -> HCI power on
+            rec = REC_STARTING;
+            rec_since = t;
+        } else if (t - rec_since >= BT_RESTART_STOP_MS) {
+            logi("bc250: BT restart: stack did not stop within %u ms - giving up\n", BT_RESTART_STOP_MS);
+            rec = REC_IDLE;
+            bt_gave_up = true;
+        }
+        return !bt_gave_up;
+    }
+    if (rec == REC_STARTING) {
+        if (uni_bt_setup_is_ready() && hci_get_state() == HCI_STATE_WORKING) {
+            rec = REC_IDLE;
+            rec_ok_total++;
+            logi("bc250: BT restart: Bluetooth is back after %lu ms\n", (unsigned long)(t - rec_since));
+            health_reset_counters(t);
+        } else if (t - rec_since >= BT_RESTART_START_MS) {
+            logi("bc250: BT restart: Bluetooth did not come back within %u ms - giving up\n", BT_RESTART_START_MS);
+            rec = REC_IDLE;
+            bt_gave_up = true;
+        }
+        return !bt_gave_up;
+    }
+    if (bt_gave_up) return false;
+
+    // ---- stack must be up (Bluepad32 treats any HCI event as "next setup step", so no pings before)
     if (!uni_bt_setup_is_ready() || hci_get_state() != HCI_STATE_WORKING) {
-        if (!health_not_ready_since) health_not_ready_since = t ? t : 1;
-        if (t - health_not_ready_since >= BT_HEALTH_NOT_READY_MS)
-            return health_fail(t, "stack not ready for too long");
+        if (!h_not_ready_since) h_not_ready_since = t ? t : 1;
+        if (t - h_not_ready_since >= BT_HEALTH_NOT_READY_MS) {
+            h_not_ready_since = 0;
+            return health_fail("stack not running");
+        }
         return true;
     }
-    health_not_ready_since = 0;
-    if (!health_last_ok) health_last_ok = t;
+    h_not_ready_since = 0;
+    if (!h_last_ok) h_last_ok = t;
 
-    if (health_waiting) {
-        if (health_answers != health_seen_answers) {   // answered
-            health_seen_answers = health_answers;
-            health_waiting = false;
-            health_misses = 0;
-            health_last_ok = t;
-        } else if (t - health_sent_at >= BT_HEALTH_TIMEOUT_MS) {
-            health_waiting = false;
-            health_misses++;
-            logi("bc250: BT health: no answer (%u in a row)\n", health_misses);
-        }
-    }
-
-    if (!health_waiting && t - health_last_try >= BT_HEALTH_PERIOD_MS) {
-        health_last_try = t;
-        if (hci_can_send_command_packet_now()) {
-            health_seen_answers = health_answers;
-            if (hci_send_cmd(&hci_read_local_version_information) == ERROR_CODE_SUCCESS) {
-                health_waiting = true;
-                health_sent_at = t;
-                health_pings++;
+    // ---- ping answers
+    if (h_waiting) {
+        if (h_answers != h_seen_answers) {
+            h_seen_answers = h_answers;
+            h_waiting = false;
+            h_misses = 0;
+            h_last_ok = t;
+            int connected = 0;
+            for (int i = 0; i < MAX_PADS; i++) connected += pads[i].used;
+            if (h_scan != 0xFF && !(h_scan & 0x02) && connected < MAX_PADS) {
+                h_page_off_count++;
+                logi("bc250: BT health: page scan is OFF (scan_enable=0x%02x) - controllers can't connect\n", h_scan);
+                if (h_page_off_count == 1) {
+                    gap_connectable_control(1);   // cheap fix first
+                } else {
+                    h_page_off_count = 0;
+                    return health_fail("page scan stayed off");
+                }
             } else {
-                health_misses++;
+                h_page_off_count = 0;
             }
-        } else {
-            health_misses++;   // command queue stuck counts as a miss too
-            logi("bc250: BT health: HCI busy (%u in a row)\n", health_misses);
+        } else if (t - h_sent_at >= BT_HEALTH_TIMEOUT_MS) {
+            h_waiting = false;
+            h_misses++;
+            logi("bc250: BT health: no answer (%u in a row)\n", h_misses);
         }
     }
+    if (!h_waiting && t - h_last_try >= BT_HEALTH_PERIOD_MS) {
+        h_last_try = t;
+        if (hci_can_send_command_packet_now() && hci_send_cmd(&cmd_read_scan_enable) == ERROR_CODE_SUCCESS) {
+            h_seen_answers = h_answers;
+            h_waiting = true;
+            h_sent_at = t;
+            h_pings++;
+        } else {
+            h_misses++;
+            logi("bc250: BT health: HCI busy (%u in a row)\n", h_misses);
+        }
+    }
+    if (h_misses >= BT_HEALTH_MAX_MISSES) {
+        h_misses = 0;
+        return health_fail("radio stopped answering");
+    }
 
-    if (health_misses >= BT_HEALTH_MAX_MISSES) return health_fail(t, "radio stopped answering");
+    // ---- a controller links up but never becomes ready
+    if (h_acl_pending && t - h_acl_up_at >= BT_CONNECT_STUCK_MS) {
+        h_acl_pending = false;
+        return health_fail("controller linked up but never became ready");
+    }
+    // ---- a controller keeps knocking without getting in
+    if (!h_win_start && (h_conn_events != h_win_events0 || h_conn_failed != h_win_failed0)) {
+        h_win_start = t ? t : 1;
+        h_win_events0 = h_conn_events;
+        h_win_failed0 = h_conn_failed;
+        h_win_ready0 = h_ready_events;
+    }
+    if (h_win_start) {
+        if (h_ready_events != h_win_ready0) {
+            h_win_start = 0;   // someone got in: fine
+            h_win_events0 = h_conn_events;
+            h_win_failed0 = h_conn_failed;
+        } else if (h_conn_failed - h_win_failed0 >= BT_CONNECT_FAILS_MAX) {
+            h_win_start = 0;
+            h_win_events0 = h_conn_events;
+            h_win_failed0 = h_conn_failed;
+            return health_fail("controller keeps trying to connect but fails");
+        } else if (t - h_win_start >= BT_CONNECT_WINDOW_MS) {
+            h_win_start = 0;
+            h_win_events0 = h_conn_events;
+            h_win_failed0 = h_conn_failed;
+        }
+    }
     return true;
 }
 
 void bt_health_status(uint32_t t, char* buf, int len) {
     int n = 0;
     for (int i = 0; i < MAX_PADS; i++) n += pads[i].used;
-    snprintf(buf, (size_t)len, "bt ready=%d hci=%d pings=%lu misses=%u last_ok=%lus ago fails=%lu pads=%d",
-             uni_bt_setup_is_ready(), (int)hci_get_state(), (unsigned long)health_pings, health_misses,
-             health_last_ok ? (unsigned long)((t - health_last_ok) / 1000) : 0ul,
-             (unsigned long)health_fails_total, n);
+    snprintf(buf, (size_t)len,
+             "bt ready=%d hci=%d scan=0x%02x pings=%lu last_ok=%lus ago conn_try=%lu conn_fail=%lu bt_restarts=%lu/%lu%s pads=%d",
+             uni_bt_setup_is_ready(), (int)hci_get_state(), h_scan, (unsigned long)h_pings,
+             h_last_ok ? (unsigned long)((t - h_last_ok) / 1000) : 0ul, (unsigned long)h_conn_events,
+             (unsigned long)h_conn_failed, (unsigned long)rec_ok_total, (unsigned long)rec_total,
+             bt_gave_up ? " GAVE-UP" : "", n);
 }
 
 // ------------------------------------------------------------------ API

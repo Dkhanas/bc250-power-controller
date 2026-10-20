@@ -8,10 +8,13 @@
 //  Bluetooth controllers are passed to the BC-250 as wired Xbox 360 pads (rumble included)
 //  Button LED: off/standby, slow blink = starting, on = running, fast blink = shutting down
 //  v4: if Bluetooth stops answering (or every 6 h idle) the Pico restarts itself - PSU off only
+//  v5: Bluetooth trouble is first fixed by restarting only Bluetooth (board keeps running);
+//      event log readable on the BC-250 over USB serial (/dev/ttyACM0) while no controller is connected
 
 #include <stdio.h>
 
 #include "bt_bridge.h"
+#include "log.h"
 #include "pads.h"
 #include "config.h"
 #include "hardware/gpio.h"
@@ -239,7 +242,7 @@ static uint32_t vbus_checked_at;
 
 static void vbus_task(uint32_t t) {
     // Only while the PSU is on: in standby USB is off anyway, so leave the CYW43 chip to Bluetooth
-    if (!USE_VBUS_SENSE || state == ST_OFF) return;
+    if (!USE_VBUS_SENSE || state == ST_OFF || bt_restarting()) return;
     if (!cyw43_ok || t - vbus_checked_at < VBUS_POLL_MS) return;
     vbus_checked_at = t;
     vbus_present = cyw43_arch_gpio_get(CYW43_WL_GPIO_VBUS_PIN);
@@ -249,7 +252,7 @@ static void vbus_task(uint32_t t) {
 // Reason codes kept in a watchdog scratch register (survives the restart, cleared at power-on)
 #define RESTART_MAGIC   0xBC250000u
 enum { RS_NONE, RS_BT_DEAD, RS_IDLE };
-static const char* const restart_name[] = {"", "Bluetooth stopped answering", "scheduled idle restart"};
+static const char* const restart_name[] = {"", "Bluetooth could not be repaired", "scheduled idle restart"};
 static bool bt_dead;
 
 static void restart_pico(int reason) {
@@ -288,6 +291,14 @@ static void restart_task(uint32_t t) {
 // ------------------------------------------------------------------ main tick (async_context lock held)
 static uint32_t seen_connected, seen_system, seen_activity;
 static uint32_t status_logged_at;
+
+static void print_status(void) {
+    uint32_t t = now_ms();
+    char b[200] = "bt off";
+    if (cyw43_ok) bt_health_status(t, b, sizeof(b));
+    printf("bc250: status up=%lus state=%s psu=%d usb=%d vbus=%d | %s\n", (unsigned long)(t / 1000),
+           state_name[state], gpio_get(PIN_PSU), usb_allowed(), vbus_present, b);
+}
 
 static void app_tick(uint32_t t) {
     btn_event_t btn = poll_button(t);
@@ -386,19 +397,17 @@ static void app_tick(uint32_t t) {
     power_key_task(t);
     led_task(t);
 
-    // Bluetooth health (Bluepad32/BTstack calls need the lock, so it runs here)
+    // Bluetooth health + self-repair (Bluepad32/BTstack calls need the lock, so it runs here)
     if (cyw43_ok && !bt_health_task(t) && !bt_dead) {
         bt_dead = true;
-        printf("bc250: Bluetooth looks dead - Pico will restart %s\n",
+        printf("bc250: Bluetooth restarts did not help - Pico will restart %s\n",
                state == ST_OFF ? "now" : "after the board is switched off");
     }
     if (STATUS_LOG_MS && t - status_logged_at >= STATUS_LOG_MS) {
         status_logged_at = t;
-        char b[160] = "bt off";
-        if (cyw43_ok) bt_health_status(t, b, sizeof(b));
-        printf("bc250: alive up=%lus state=%s psu=%d usb=%d vbus=%d | %s\n", (unsigned long)(t / 1000),
-               state_name[state], gpio_get(PIN_PSU), usb_allowed(), vbus_present, b);
+        print_status();
     }
+    log_task();   // USB serial log port (idle identity only)
 }
 
 // ------------------------------------------------------------------ main
@@ -418,7 +427,9 @@ int main(void) {
 
     led_init();
     stdio_init_all();   // UART0 on GP0/GP1 (debug log only, nothing needs to be connected)
-    printf("\nbc250: power controller starting (firmware v4)\n");
+    log_init(watchdog_caused_reboot());   // RAM log, kept across self-restarts
+    log_set_status_fn(print_status);
+    printf("\nbc250: power controller starting (firmware v5)\n");
     if (watchdog_caused_reboot()) {
         uint32_t r = watchdog_hw->scratch[0];
         if ((r & 0xFFFF0000u) == RESTART_MAGIC && (r & 0xFFFF) <= RS_IDLE)

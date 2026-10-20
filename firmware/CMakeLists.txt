@@ -29,6 +29,7 @@ add_executable(bc250_power
     src/usb_xinput.c
     src/usb_device.c
     src/pads.c
+    src/log.c
     ${BTSTACK_MISSING_SOURCES}
 )
 

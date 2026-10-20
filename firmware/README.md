@@ -2,7 +2,7 @@
 
 ## Flash it
 1. Hold BOOTSEL on the Pico, plug it into a PC → it shows up as a USB drive `RP2350`.
-2. Copy `release/bc250_power_v4.uf2` onto it. The Pico reboots and runs the firmware.
+2. Copy `release/bc250_power_v5.uf2` onto it. The Pico reboots and runs the firmware.
 
 ## What it does
 | Input | State | Result |
@@ -72,6 +72,7 @@ Built with Pico SDK 2.3.1 and Bluepad32 master (Oct 2026).
 - `src/usb_device.c` – USB identities (idle / Xbox 360 / DS4 / DualSense / Switch Pro), descriptors built per group, feature reports, re-plugging
 - `src/pads.c` – per-controller slots shared between the Bluetooth and USB sides
 - `src/usb_xinput.c` – TinyUSB class driver for the Xbox 360 interfaces
+- `src/log.c` – RAM event log + USB serial log port (v5)
 - `src/config.h` – everything you'd tweak
 
 ## v2 changes (17 Oct 2026)
@@ -106,3 +107,31 @@ CYW43 radio / BTstack had stopped, while the main loop kept running, so the 3 s 
 - **Debug log** (GP0, 115200): a status line every minute (`bc250: alive ... bt ready=1 hci=2 pings=.. misses=..`),
   and the reason for each restart is printed on the next boot.
 - Settings: `BT_HEALTH_*`, `IDLE_RESTART_MS`, `RESTART_QUIET_MS`, `STATUS_LOG_MS` in `src/config.h`.
+
+## v5 changes (20 Oct 2026) - Bluetooth repair while running + log on the BC-250
+Seen on the real build: with the board **running**, a controller that disconnected after idling could not
+reconnect (it kept searching). v4 only repaired Bluetooth after a shutdown, because restarting the whole Pico
+drops GP15 and would cut the PSU.
+- **Bluetooth-only restart:** the Bluetooth stack is stopped, the CYW43 radio chip is reset (its firmware is
+  reloaded) and Bluepad32 is set up again. GP15 is never touched, so the board keeps running. Takes a few seconds;
+  after that, pressing PS reconnects.
+- **Triggers:**
+  - the radio doesn't answer the 10 s health check 3 times in a row;
+  - **page scan is off** (the Pico isn't reachable for controllers). The health check now uses HCI
+    "Read Scan Enable", so it sees this even when the radio itself is fine. It first tries switching
+    page scan back on, then restarts;
+  - a controller links up but isn't ready within 20 s, or fails to connect 3 times within 60 s.
+- **Limits:** at most 3 Bluetooth restarts per 30 min. If they don't help, the Pico restarts itself after the next
+  power-off, as in v4.
+- **Event log:** everything the firmware prints goes into a 16 KB RAM log that survives a Pico self-restart
+  (cleared when the PSU is unplugged). The status line is now every 5 min; controller connects, disconnects,
+  failed attempts and every repair are logged.
+- **Reading the log on the BC-250:** while **no controller is connected**, the Pico also appears as a USB serial
+  port ("BC-250 Power Controller log"). In SteamOS desktop mode, open Konsole:
+  ```
+  sudo cat /dev/ttyACM0          # prints the whole log, then new lines live; Ctrl+C to stop
+  ```
+  Commands (in a second Konsole while `cat` runs): `echo s | sudo tee /dev/ttyACM0` = status line,
+  `echo r | sudo tee /dev/ttyACM0` = restart Bluetooth now (to test the repair), `c` = clear log, `h` = help.
+  `sudo` needs a password: set one once with `passwd`.
+- Settings: `BT_CONNECT_*`, `BT_RESTART_*`, `LOG_SIZE`, `STATUS_LOG_MS` in `src/config.h`.

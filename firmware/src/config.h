@@ -69,10 +69,27 @@
 #define BT_HEALTH_TIMEOUT_MS    3000
 #define BT_HEALTH_MAX_MISSES    3
 #define BT_HEALTH_NOT_READY_MS  60000
+// v5: Bluetooth restart without touching the PSU (works while the board is running).
+// Also triggered when page scan is off (controllers can't connect), when a controller links up
+// but never becomes ready within BT_CONNECT_STUCK_MS, or fails to connect BT_CONNECT_FAILS_MAX
+// times within BT_CONNECT_WINDOW_MS.
+#define BT_CONNECT_STUCK_MS     20000
+#define BT_CONNECT_FAILS_MAX    3
+#define BT_CONNECT_WINDOW_MS    60000
+#define BT_RESTART_STOP_MS      10000   // stack must stop within this
+#define BT_RESTART_START_MS     20000   // and be running again within this
+// At most this many Bluetooth restarts per window; after that the Pico restarts itself
+// at the next power-off (as in v4).
+#define BT_RESTART_MAX_IN_WINDOW 3
+#define BT_RESTART_WINDOW_MS    (30u * 60u * 1000u)
 // Safety net: with the PSU off and no controller connected, restart the Pico this often anyway.
 // 0 = never.
 #define IDLE_RESTART_MS         (6u * 60u * 60u * 1000u)   // 6 hours
 // Don't restart within this long after the PSU went off, or while the button is pressed.
 #define RESTART_QUIET_MS        60000
-// Status line on the debug UART (GP0, 115200) this often. 0 = off.
-#define STATUS_LOG_MS           60000
+// Status line in the log (USB serial + UART GP0 115200) this often. 0 = off.
+#define STATUS_LOG_MS           300000
+
+// ---------------------------------------------------------------- log (v5)
+// RAM log size. Readable on the BC-250 over USB serial while no controller is connected.
+#define LOG_SIZE                16384

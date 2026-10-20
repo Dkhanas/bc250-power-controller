@@ -73,7 +73,7 @@ static const uint8_t rd_switch[] = {
 // ============================================================ configuration descriptor (built per enumeration)
 
 #define ATTR TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP
-static uint8_t cfg[TUD_CONFIG_DESC_LEN + MAX_PADS * XINPUT_DESC_LEN + TUD_HID_DESC_LEN + 16];
+static uint8_t cfg[TUD_CONFIG_DESC_LEN + MAX_PADS * XINPUT_DESC_LEN + TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN + 16];
 static uint16_t cfg_len;
 
 static void cfg_add(const uint8_t* d, uint16_t n) {
@@ -97,6 +97,12 @@ static void build_config(void) {
         uint8_t h[] = { TUD_HID_DESCRIPTOR(itfs, 4, HID_ITF_PROTOCOL_NONE, sizeof(rd_power), (uint8_t)(0x81 + itfs), 8, 10) };
         cfg_add(h, sizeof(h));
         itfs++;
+        if (usb_active == USB_P_IDLE) {
+            // v5: log port (CDC serial, with its own IAD). Idle only, so controller identities stay exact.
+            uint8_t c[] = { TUD_CDC_DESCRIPTOR(itfs, 5, (uint8_t)(0x81 + itfs), 8, (uint8_t)(0x02 + itfs), (uint8_t)(0x82 + itfs), 64) };
+            cfg_add(c, sizeof(c));
+            itfs += 2;
+        }
     } else {
         uint16_t rd_len = usb_active == USB_P_DS4 ? sizeof(rd_ds4) : usb_active == USB_P_DS5 ? sizeof(rd_ds5) : sizeof(rd_switch);
         uint8_t interval = usb_active == USB_P_SWITCH ? 8 : 1;
@@ -146,6 +152,11 @@ static void build_device(void) {
     uint16_t vid = 0x2E8A, pid = 0x10BC, bcd = 0x0100;   // idle: Raspberry Pi VID, private PID
     str_manufacturer = "Raspberry Pi";
     str_product = "BC-250 Power Controller";
+    // idle has a CDC log port with an IAD -> "Miscellaneous / IAD" device class
+    bool iad = (usb_active == USB_P_IDLE);
+    desc_device.bDeviceClass = iad ? TUSB_CLASS_MISC : 0;
+    desc_device.bDeviceSubClass = iad ? MISC_SUBCLASS_COMMON : 0;
+    desc_device.bDeviceProtocol = iad ? MISC_PROTOCOL_IAD : 0;
     switch (usb_active) {
         case USB_P_XBOX:
             vid = 0x045E; pid = 0x028E; bcd = 0x0114;
@@ -190,6 +201,7 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
             case 2: s = str_product; break;
             case 3: pico_get_unique_board_id_string(serial, sizeof(serial)); s = serial; break;
             case 4: s = "BC-250 Power Key"; break;
+            case 5: s = "BC-250 Power Controller log"; break;
             default: return NULL;
         }
         n = (uint8_t)strlen(s);

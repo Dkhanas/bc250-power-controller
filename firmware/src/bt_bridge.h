@@ -17,7 +17,9 @@ void bt_rumble(uint8_t slot, uint8_t strong, uint8_t weak);   // Xbox 360 mode r
 void bt_native_task(uint32_t now_ms);  // feature-report fetching + USB -> controller output reports
 
 // Bluetooth health check: pings the radio with a harmless HCI command every BT_HEALTH_PERIOD_MS.
-// bt_health_task() returns false once Bluetooth has stopped answering (main.c then restarts the
-// Pico, but only while the PSU is off).
+// v5: on trouble it first restarts only Bluetooth (radio chip reset + stack re-init), which keeps
+// the board running. Returns false only if that keeps failing.
 bool bt_health_task(uint32_t now_ms);
 void bt_health_status(uint32_t now_ms, char* buf, int len);   // one-line summary for the log
+bool bt_restarting(void);      // Bluetooth restart in progress (don't touch the CYW43 chip)
+void bt_restart_now(void);     // manual restart (log port command), for testing

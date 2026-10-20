@@ -27,7 +27,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 ## Quick start
 
-1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v4.uf2` onto the `RP2350` drive.
+1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v5.uf2` onto the `RP2350` drive.
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
 4. **Pair a controller:** put it in pairing mode. Pairing turns the BC-250 on (expected).
@@ -35,9 +35,12 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 ## Downsides and known limitations
 
 **Testing status**
-- **Firmware v4 compiles cleanly but hasn't run for long on real hardware yet.** The Bluetooth self-restart is a
-  workaround: the cause of the original Bluetooth hang (controllers stopped waking the board after a day or so in
-  standby) is still unknown.
+- **Firmware v5 compiles cleanly but hasn't been tested on real hardware yet.** v4 ran on the real board.
+  The Bluetooth repair is a workaround: the cause of the Bluetooth hang (after a controller disconnects, it
+  sometimes can't reconnect) is still unknown. v5's log (`sudo cat /dev/ttyACM0`) is there to find it.
+- **Bluetooth repair takes a moment:** when Bluetooth is stuck, the Pico notices within about 30 s and restarts
+  only Bluetooth, which takes a few more seconds. Until then, PS doesn't reconnect.
+- **The log port only exists while no controller is connected**, so controller identities stay exact.
 - **The PCB v9 was checked with KiCad DRC and against the official connector footprint, not on a built board.**
   Check the first board with a multimeter before connecting the PSU (see [`pcb/README.md`](pcb/README.md)).
 - **The perfboard map (v16) has the ATX header mirrored.** Wire it by wire colour, not by the hole numbers.
@@ -76,13 +79,13 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 - **ATX header orientation:** with the latch facing the wall, **pin 1 is at the FRONT end**, and the two pin rows are **5.5 mm apart**.
   PCB versions v1–v8 and perfboard map v16 had this mirrored (12 V on GND). Only use **PCB v9 or later**.
 - **Pico VBUS (pin 40) stays unconnected** on the board. The USB cable's 5 V (red wire) can leak standby power into a
-  switched-off BC-250; firmware v4 handles a normal cable (`USE_VBUS_SENSE 1`).
+  switched-off BC-250; firmware v4 and later handle a normal cable (`USE_VBUS_SENSE 1`).
 
 ## Versions
 
 | | Version | Date |
 |---|---|---|
-| Firmware | v4 – Bluetooth self-healing (restarts the Pico if Bluetooth stops answering, PSU off only) | 2026-10-20 |
+| Firmware | v5 – Bluetooth repair while running (restarts only Bluetooth, board stays on) + event log on the BC-250 over USB serial | 2026-10-20 |
 | PCB | v9 – corrected ATX header (5.5 mm rows, pin 1 at the front, peg holes) | 2026-10-19 |
 | Perfboard map | v16 (ATX header superseded by PCB v9) | 2026-10-18 |
 
