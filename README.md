@@ -32,6 +32,45 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
 4. **Pair a controller:** put it in pairing mode. Pairing turns the BC-250 on (expected).
 
+## Downsides and known limitations
+
+**Testing status**
+- **Firmware v4 compiles cleanly but hasn't run for long on real hardware yet.** The Bluetooth self-restart is a
+  workaround: the cause of the original Bluetooth hang (controllers stopped waking the board after a day or so in
+  standby) is still unknown.
+- **The PCB v9 was checked with KiCad DRC and against the official connector footprint, not on a built board.**
+  Check the first board with a multimeter before connecting the PSU (see [`pcb/README.md`](pcb/README.md)).
+- **The perfboard map (v16) has the ATX header mirrored.** Wire it by wire colour, not by the hole numbers.
+
+**Controllers**
+- **Whenever a controller joins or leaves, every controller drops for about 0.5 s.** The Pico re-plugs itself on USB
+  with the new layout, and Steam may reassign player numbers.
+- **Several real DualSense / DS4 / Switch Pro controllers inside one USB device is unusual.** Linux supports it,
+  but Steam may show only one of them. Mixed groups fall back to Xbox 360 pads, which lose the touchpad, gyro,
+  lightbar and adaptive triggers.
+- **No audio:** the DualSense / DS4 headphone jack, speaker and mic aren't passed through.
+- **Up to 4 controllers. Only Bluetooth ones work**: no wired controllers through the Pico, and no non-Bluetooth Xbox One pads.
+- **Pairing a controller turns the BC-250 on.** For 20 s after a shutdown, controllers that reconnect are ignored,
+  so a quick press of PS right after power-off does nothing.
+
+**Power and shutdown**
+- **The shutdown key is a USB "Power" key.** SteamOS has to be set to `HandlePowerKey=poweroff`. Gaming mode or an
+  inhibitor can swallow it; then press again, or hold 5 s.
+- **Holding the button for 5 s cuts power hard,** with no clean shutdown, like pulling the plug.
+- **A short press while the board is booting is ignored.**
+- **"Off" is detected from TPM header pin 9.** If the board doesn't boot within 180 s, the PSU is switched off again.
+- **When a controller identity is active, the power key needs a ~2 s USB re-plug first.** The controllers vanish from
+  SteamOS at that moment, which doesn't matter because it's shutting down.
+
+**Hardware**
+- **The Pico is always powered from the PSU's 5 V standby rail,** with its Bluetooth radio on, so the PC draws a little more
+  power while "off".
+- **With a normal USB cable, a little standby power can leak into the switched-off BC-250** through the Pico's
+  internal diode (its back-panel LEDs may glow faintly). The clean fix is a cable with the red 5 V wire cut, plus
+  `USE_VBUS_SENSE 0` in `firmware/src/config.h`.
+- **Specific to the BC-250 and an ATX PSU** (needs AUTO_PWRON, the TPM header and J4003). Other boards need new pin mapping and logic.
+- **No Wi-Fi features** (no web page or remote power-on over the network).
+
 ## ⚠️ Safety notes
 
 - **ATX header orientation:** with the latch facing the wall, **pin 1 is at the FRONT end**, and the two pin rows are **5.5 mm apart**.
