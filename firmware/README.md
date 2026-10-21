@@ -2,7 +2,7 @@
 
 ## Flash it
 1. Hold BOOTSEL on the Pico, plug it into a PC → it shows up as a USB drive `RP2350`.
-2. Copy `release/bc250_power_v5.uf2` onto it. The Pico reboots and runs the firmware.
+2. Copy `release/bc250_power_v6.uf2` onto it. The Pico reboots and runs the firmware.
 
 ## What it does
 | Input | State | Result |
@@ -135,3 +135,18 @@ drops GP15 and would cut the PSU.
   `echo r | sudo tee /dev/ttyACM0` = restart Bluetooth now (to test the repair), `c` = clear log, `h` = help.
   `sudo` needs a password: set one once with `passwd`.
 - Settings: `BT_CONNECT_*`, `BT_RESTART_*`, `LOG_SIZE`, `STATUS_LOG_MS` in `src/config.h`.
+
+## v6 changes (20 Oct 2026) - pairing key guard
+Seen on the real build with v5: a controller that had disconnected kept "searching" and only came back after
+**re-pairing**. So the Pico's Bluetooth was alive, but the controller's pairing key was gone.
+Cause: Bluepad32 (`uni_bt_bredr.c`, `on_l2cap_channel_opened`) **deletes a controller's stored pairing key**
+whenever opening its L2CAP channel fails once ("Removing key for device"). One unlucky reconnect is enough.
+After that the controller keeps reconnecting with its key, the Pico refuses, and only re-pairing helps.
+- **Key guard:** when a controller connects successfully, the Pico saves a backup of its pairing key in flash,
+  in the same BTstack storage, under its own tags. It writes only when the key changes, e.g. after a re-pair;
+  up to 8 controllers. Twice a second it checks that every backed-up key is still there, and puts back any key
+  Bluepad32 deleted.
+- Logged as `key guard: pairing key for XX:XX:... was deleted - restored it`; the status line shows `keys_restored=`.
+- A controller you **re-pair** gets its new key backed up automatically. Controllers paired before v6 get a
+  backup the first time they connect with v6.
+- Setting: `KEY_GUARD_CHECK_MS` in `src/config.h`.

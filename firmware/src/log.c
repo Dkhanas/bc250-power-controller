@@ -78,7 +78,7 @@ void log_task(void) {
     bool conn = tud_cdc_connected();
     if (conn && !was_connected) {
         pos = ring.total > LOG_SIZE ? ring.total - LOG_SIZE : 0;   // send the whole ring first
-        printf("bc250: log port opened (firmware v5, %lu starts since power-on)\n", (unsigned long)ring.boots);
+        printf("bc250: log port opened (firmware v6, %lu starts since power-on)\n", (unsigned long)ring.boots);
         help();
     }
     was_connected = conn;

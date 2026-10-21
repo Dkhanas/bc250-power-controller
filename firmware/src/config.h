@@ -82,6 +82,9 @@
 // at the next power-off (as in v4).
 #define BT_RESTART_MAX_IN_WINDOW 3
 #define BT_RESTART_WINDOW_MS    (30u * 60u * 1000u)
+// v6: pairing key guard. Bluepad32 deletes a controller's pairing key when one reconnect attempt fails;
+// the Pico keeps a backup of every key that worked and restores it. Checked this often.
+#define KEY_GUARD_CHECK_MS      500
 // Safety net: with the PSU off and no controller connected, restart the Pico this often anyway.
 // 0 = never.
 #define IDLE_RESTART_MS         (6u * 60u * 60u * 1000u)   // 6 hours

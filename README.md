@@ -27,7 +27,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 ## Quick start
 
-1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v5.uf2` onto the `RP2350` drive.
+1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v6.uf2` onto the `RP2350` drive.
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
 4. **Pair a controller:** put it in pairing mode. Pairing turns the BC-250 on (expected).
@@ -35,9 +35,12 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 ## Downsides and known limitations
 
 **Testing status**
-- **Firmware v5 compiles cleanly but hasn't been tested on real hardware yet.** v4 ran on the real board.
-  The Bluetooth repair is a workaround: the cause of the Bluetooth hang (after a controller disconnects, it
-  sometimes can't reconnect) is still unknown. v5's log (`sudo cat /dev/ttyACM0`) is there to find it.
+- **Firmware v6 compiles cleanly but hasn't been tested on real hardware yet** (v4 and v5 ran on the real board).
+  Its key guard works around a Bluepad32 behaviour: after one failed reconnect Bluepad32 deletes the controller's
+  pairing key, which made controllers "search" forever until re-paired. The Bluetooth repair from v5 stays for
+  real radio hangs. The log (`sudo cat /dev/ttyACM0`) shows which one happened.
+- **Controllers paired before v6 aren't protected until their first successful connection with v6.** If one
+  already lost its key, re-pair it once.
 - **Bluetooth repair takes a moment:** when Bluetooth is stuck, the Pico notices within about 30 s and restarts
   only Bluetooth, which takes a few more seconds. Until then, PS doesn't reconnect.
 - **The log port only exists while no controller is connected**, so controller identities stay exact.
@@ -85,7 +88,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 | | Version | Date |
 |---|---|---|
-| Firmware | v5 – Bluetooth repair while running (restarts only Bluetooth, board stays on) + event log on the BC-250 over USB serial | 2026-10-20 |
+| Firmware | v6 – pairing key guard (restores keys Bluepad32 deletes), Bluetooth repair while running, event log over USB serial | 2026-10-20 |
 | PCB | v9 – corrected ATX header (5.5 mm rows, pin 1 at the front, peg holes) | 2026-10-19 |
 | Perfboard map | v16 (ATX header superseded by PCB v9) | 2026-10-18 |
 

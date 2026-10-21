@@ -10,6 +10,7 @@
 //  v4: if Bluetooth stops answering (or every 6 h idle) the Pico restarts itself - PSU off only
 //  v5: Bluetooth trouble is first fixed by restarting only Bluetooth (board keeps running);
 //      event log readable on the BC-250 over USB serial (/dev/ttyACM0) while no controller is connected
+//  v6: pairing key guard - restores a controller's key when Bluepad32 deletes it after a failed reconnect
 
 #include <stdio.h>
 
@@ -429,7 +430,7 @@ int main(void) {
     stdio_init_all();   // UART0 on GP0/GP1 (debug log only, nothing needs to be connected)
     log_init(watchdog_caused_reboot());   // RAM log, kept across self-restarts
     log_set_status_fn(print_status);
-    printf("\nbc250: power controller starting (firmware v5)\n");
+    printf("\nbc250: power controller starting (firmware v6)\n");
     if (watchdog_caused_reboot()) {
         uint32_t r = watchdog_hw->scratch[0];
         if ((r & 0xFFFF0000u) == RESTART_MAGIC && (r & 0xFFFF) <= RS_IDLE)

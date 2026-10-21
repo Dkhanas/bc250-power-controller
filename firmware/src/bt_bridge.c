@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <btstack.h>
+#include "btstack_tlv.h"
 #include <uni.h>
 
 #include "config.h"
@@ -38,6 +39,7 @@ static bt_slot_t bs[MAX_PADS];
 
 static volatile uint32_t h_ready_events;     // health check: a controller became ready
 static void bt_note_ready(void) { h_ready_events++; }
+static void kb_note_ready(bd_addr_t addr);
 
 static const uint8_t fetch_ds5[] = {0x09, 0x20, 0x05};   // pairing (MAC), firmware, calibration
 static const uint8_t fetch_ds4[] = {0x05, 0xA3};         // calibration (BT layout), firmware
@@ -313,6 +315,7 @@ static uni_error_t p_on_device_ready(uni_hid_device_t* d) {
     p->used = true;
     bt_ev_connected++;
     bt_note_ready();
+    kb_note_ready(d->conn.btaddr);   // v6: back up this controller's pairing key
     logi("bc250: controller ready in slot %d (kind %d, pid %04x)\n", i, p->kind, p->pid);
     return UNI_ERROR_SUCCESS;
 }
@@ -357,6 +360,104 @@ static struct uni_platform platform = {
     .on_controller_data = p_on_controller_data,
     .get_property = p_get_property,
 };
+
+// ------------------------------------------------------------------ pairing key guard (v6)
+// Bluepad32 deletes a controller's stored link key whenever opening its L2CAP channel fails once
+// (uni_bt_bredr.c, on_l2cap_channel_opened). After that the controller keeps reconnecting with its
+// key, the Pico has none, and only re-pairing helps. We keep our own copy of every key that worked
+// (in the same flash TLV store, under our own tags) and put it back as soon as it disappears.
+
+#define KEYBK_MAX 8
+#define KEYBK_TAG(i) (0x42434B00u | (uint32_t)(i))   // 'B' 'C' 'K' + index
+
+typedef struct {
+    bd_addr_t addr;
+    link_key_t key;
+    uint8_t type;
+    uint8_t valid;
+} keybk_t;
+
+static keybk_t kb[KEYBK_MAX];
+static bool kb_loaded;
+static uint32_t kb_checked_at, kb_restores;
+static uint8_t kb_next;   // round-robin slot for a new controller when all are used
+
+static bool kb_tlv(const btstack_tlv_t** impl, void** ctx) {
+    *impl = NULL;
+    *ctx = NULL;
+    btstack_tlv_get_instance(impl, ctx);
+    return *impl != NULL;
+}
+
+static void kb_load(void) {
+    const btstack_tlv_t* impl;
+    void* ctx;
+    if (!kb_tlv(&impl, &ctx)) return;
+    int n = 0;
+    for (int i = 0; i < KEYBK_MAX; i++) {
+        keybk_t e;
+        if (impl->get_tag(ctx, KEYBK_TAG(i), (uint8_t*)&e, sizeof(e)) == (int)sizeof(e) && e.valid == 1) {
+            kb[i] = e;
+            n++;
+        } else {
+            memset(&kb[i], 0, sizeof(kb[i]));
+        }
+    }
+    kb_loaded = true;
+    logi("bc250: key guard: %d controller key backup(s) loaded\n", n);
+}
+
+static void kb_save(int i) {
+    const btstack_tlv_t* impl;
+    void* ctx;
+    if (!kb_tlv(&impl, &ctx)) return;
+    impl->store_tag(ctx, KEYBK_TAG(i), (const uint8_t*)&kb[i], sizeof(kb[i]));
+}
+
+// A controller became ready: its key is good, back it up (flash write only if it changed)
+static void kb_note_ready(bd_addr_t addr) {
+    if (!kb_loaded) kb_load();
+    if (!kb_loaded) return;
+    link_key_t key;
+    link_key_type_t type;
+    if (!gap_get_link_key_for_bd_addr(addr, key, &type)) return;
+    int slot = -1;
+    for (int i = 0; i < KEYBK_MAX && slot < 0; i++)
+        if (kb[i].valid && bd_addr_cmp(kb[i].addr, addr) == 0) slot = i;
+    if (slot >= 0 && memcmp(kb[slot].key, key, sizeof(key)) == 0 && kb[slot].type == (uint8_t)type) return;
+    for (int i = 0; i < KEYBK_MAX && slot < 0; i++)
+        if (!kb[i].valid) slot = i;
+    if (slot < 0) {
+        slot = kb_next;
+        kb_next = (uint8_t)((kb_next + 1) % KEYBK_MAX);
+    }
+    bd_addr_copy(kb[slot].addr, addr);
+    memcpy(kb[slot].key, key, sizeof(key));
+    kb[slot].type = (uint8_t)type;
+    kb[slot].valid = 1;
+    kb_save(slot);
+    logi("bc250: key guard: saved key backup for %s (slot %d)\n", bd_addr_to_str(addr), slot);
+}
+
+// Put back any backed-up key that Bluepad32 has deleted
+static void kb_task(uint32_t t) {
+    if (!kb_loaded) {
+        kb_load();
+        if (!kb_loaded) return;
+    }
+    if (t - kb_checked_at < KEY_GUARD_CHECK_MS) return;
+    kb_checked_at = t;
+    for (int i = 0; i < KEYBK_MAX; i++) {
+        if (!kb[i].valid) continue;
+        link_key_t key;
+        link_key_type_t type;
+        if (gap_get_link_key_for_bd_addr(kb[i].addr, key, &type)) continue;
+        gap_store_link_key_for_bd_addr(kb[i].addr, kb[i].key, (link_key_type_t)kb[i].type);
+        kb_restores++;
+        logi("bc250: key guard: pairing key for %s was deleted - restored it (%lu so far)\n",
+             bd_addr_to_str(kb[i].addr), (unsigned long)kb_restores);
+    }
+}
 
 // ------------------------------------------------------------------ health check + recovery (v5)
 // Every BT_HEALTH_PERIOD_MS we send HCI "Read Scan Enable" (harmless). The answer proves the radio is
@@ -527,6 +628,7 @@ bool bt_health_task(uint32_t t) {
     }
     h_not_ready_since = 0;
     if (!h_last_ok) h_last_ok = t;
+    kb_task(t);   // v6: put back pairing keys Bluepad32 deleted
 
     // ---- ping answers
     if (h_waiting) {
@@ -607,11 +709,11 @@ void bt_health_status(uint32_t t, char* buf, int len) {
     int n = 0;
     for (int i = 0; i < MAX_PADS; i++) n += pads[i].used;
     snprintf(buf, (size_t)len,
-             "bt ready=%d hci=%d scan=0x%02x pings=%lu last_ok=%lus ago conn_try=%lu conn_fail=%lu bt_restarts=%lu/%lu%s pads=%d",
+             "bt ready=%d hci=%d scan=0x%02x pings=%lu last_ok=%lus ago conn_try=%lu conn_fail=%lu bt_restarts=%lu/%lu keys_restored=%lu%s pads=%d",
              uni_bt_setup_is_ready(), (int)hci_get_state(), h_scan, (unsigned long)h_pings,
              h_last_ok ? (unsigned long)((t - h_last_ok) / 1000) : 0ul, (unsigned long)h_conn_events,
              (unsigned long)h_conn_failed, (unsigned long)rec_ok_total, (unsigned long)rec_total,
-             bt_gave_up ? " GAVE-UP" : "", n);
+             (unsigned long)kb_restores, bt_gave_up ? " GAVE-UP" : "", n);
 }
 
 // ------------------------------------------------------------------ API
