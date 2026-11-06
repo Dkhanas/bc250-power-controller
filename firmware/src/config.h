@@ -91,6 +91,30 @@
 // v6: pairing key guard. Bluepad32 deletes a controller's pairing key when one reconnect attempt fails;
 // the Pico keeps a backup of every key that worked and restores it. Checked this often.
 #define KEY_GUARD_CHECK_MS      500
+
+// ---------------------------------------------------------------- low battery (v8)
+// Bluepad32 reports 1 (empty) .. 255 (full), 0 = unknown (DualSense / DualShock report it).
+// At or below LOW_BATTERY_LEVEL the controller rumbles briefly every LOW_BATTERY_REMIND_MS,
+// and the button LED blinks off briefly every 3 s while the console is on.
+#define LOW_BATTERY_LEVEL       51      // ~20 %
+#define LOW_BATTERY_REMIND_MS   (10u * 60u * 1000u)
+
+// ---------------------------------------------------------------- Wi-Fi setup hotspot (v8)
+// No network saved yet -> the Pico opens its own Wi-Fi with a settings page at http://192.168.4.1.
+// Saved network unreachable for WIFI_FAIL_TO_SETUP_MS -> hotspot for SETUP_HOTSPOT_MS, then it tries again.
+#define SETUP_HOTSPOT_SSID      "BC250-setup"
+#define SETUP_HOTSPOT_PASSWORD  ""          // "" = open (easiest); or at least 8 characters for WPA2
+#define WIFI_FAIL_TO_SETUP_MS   (5u * 60u * 1000u)
+#define SETUP_HOTSPOT_MS        (10u * 60u * 1000u)
+
+// ---------------------------------------------------------------- when Wi-Fi runs (v8, Settings page)
+// Mode "only when turned on" (default): hold the case button WIFI_HOLD_MS with the console off and release
+// (LED stays lit = release now). Wi-Fi then stays on until the page hasn't been used for WIFI_REQUEST_MS.
+// The same request turns Wi-Fi on temporarily in every other mode too.
+#define WIFI_HOLD_MS            8000
+#define WIFI_REQUEST_MS         (30u * 60u * 1000u)
+// Mode "only while the console is off": Wi-Fi goes off this long after the console switches on
+#define WIFI_WHILE_OFF_GRACE_MS 15000
 // Safety net: with the PSU off and no controller connected, restart the Pico this often anyway.
 // 0 = never.
 #define IDLE_RESTART_MS         (6u * 60u * 60u * 1000u)   // 6 hours

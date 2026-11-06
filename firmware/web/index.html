@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BC-250</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<meta name="apple-mobile-web-app-title" content="BC-250">
+<meta name="theme-color" content="#2f7d4f">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>BC-250</h1>
+
+  <div class="card">
+    <div class="big" id="state">…</div>
+    <div class="mut" id="summary"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="on" onclick="act('on')">Power on</button>
+      <button id="off" class="sec" onclick="act('shutdown')">Shut down</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Controllers</h2>
+    <div id="ctrls" class="mut">…</div>
+    <button class="sec" id="pair" style="margin-top:10px" onclick="pairNow()">+ Pair a new controller</button>
+    <div id="pairbox" class="mut"></div>
+  </div>
+
+  <div id="msg" class="mut" style="text-align:center;min-height:20px"></div>
+  <div id="wifinote" class="mut" style="text-align:center"></div>
+  <div class="foot"><a href="/settings">Settings</a><a href="#" onclick="forceOff();return false">Force off</a></div>
+</main>
+<script src="/app.js"></script>
+<script>
+const NAMES = { OFF: 'Off', STARTING: 'Starting…', RUNNING: 'On', STOPPING: 'Shutting down…' };
+let pairSeq = null;     // pairing-window result we're waiting for (after our own Pair button)
+let counting = false;   // the countdown is on screen
+
+async function update() {
+  let s;
+  try { s = await (await fetch('/api/status')).json(); }
+  catch (e) { $('state').textContent = 'Not reachable'; return; }
+
+  $('state').textContent = NAMES[s.state] || s.state;
+  let sum = s.controllers + ' controller' + (s.controllers === 1 ? '' : 's') + ' connected';
+  if (s.battery !== null) sum += ' · battery ' + s.battery + ' %';
+  $('summary').textContent = sum;
+  const w = s.wifi || {};
+  $('wifinote').textContent = w.off_in >= 0
+    ? 'Wi-Fi switches off in ' + Math.max(1, Math.round(w.off_in / 60)) + ' min unless you use this page.'
+    : (w.mode === 1 ? 'Wi-Fi switches off while the console is on.' : '');
+  $('on').disabled = s.state !== 'OFF';
+  $('off').disabled = s.state !== 'RUNNING';
+
+  // controller list
+  const c = s.ctrls || [];
+  $('ctrls').innerHTML = c.length ? c.map(x =>
+    '<div class="item"><span class="dot' + (x.conn ? ' on' : '') + '"></span><div class="grow"><div class="name">' + esc(x.name) +
+    '</div><div class="mut">' + (x.conn ? 'connected' + (x.bat >= 0 ? ' · ' + x.bat + ' %' : '') : 'not connected') +
+    '</div></div><button class="small" data-addr="' + esc(x.addr) + '" data-name="' + esc(x.name) + '" onclick="forget(this)">Forget</button></div>'
+  ).join('') : 'No controllers paired yet.';
+
+  // pairing window
+  const p = s.pair;
+  if (p.active) {
+    counting = true;
+    $('pair').disabled = true;
+    $('pairbox').innerHTML = 'Put the controller in pairing mode now… <b>' + p.left + ' s</b><br>' +
+      'DualSense: hold Create + PS · DualShock: Share + PS · Xbox: pair button · Switch Pro: sync button';
+  } else {
+    $('pair').disabled = false;
+    if (pairSeq !== null && p.seq !== pairSeq) {
+      $('pairbox').innerHTML = p.result === 'paired'
+        ? '<span class="ok">✓ ' + esc(p.name) + ' paired</span>'
+        : '<span class="bad">No controller found. Try again, and hold the buttons until the light flashes fast.</span>';
+      pairSeq = null;
+    } else if (counting && pairSeq === null) {
+      $('pairbox').innerHTML = '';   // window opened with the case button has ended
+    }
+    counting = false;
+  }
+}
+
+async function act(a) {
+  $('msg').textContent = '';
+  const r = await post('/api/' + a);
+  $('msg').textContent = r.ok ? '' : 'Failed (' + r.status + ')';
+  update();
+}
+async function pairNow() {
+  const s = await (await fetch('/api/status')).json();
+  pairSeq = s.pair.seq;
+  $('pairbox').textContent = '';
+  await act('pair');
+}
+async function forget(b) {
+  const addr = b.dataset.addr, name = b.dataset.name;
+  if (!confirm('Forget ' + name + '? It will need pairing again to connect.')) return;
+  const r = await post('/api/forget', { addr: addr });
+  $('msg').textContent = r.ok ? name + ' forgotten' : 'Failed (' + r.status + ')';
+  update();
+}
+function forceOff() {
+  if (confirm('Cut the power without shutting down? Unsaved games are lost.')) act('off');
+}
+update();
+setInterval(update, 2000);
+</script>
+</body>
+</html>

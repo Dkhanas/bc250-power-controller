@@ -1,5 +1,6 @@
 # firmware build output
 firmware/build/
+firmware/.deps/
 build/
 out/
 *.elf
@@ -13,13 +14,20 @@ out/
 # KiCad backups / local state
 *-backups/
 *.kicad_prl
+*.kicad_pcb-bak
+*.kicad_sch-bak
 fp-info-cache
 _autosave-*
+\#auto_saved_files\#
 *.lck
 
 # IDE / OS
 .idea/
 .vscode/
+.vs/
 __pycache__/
+*.swp
+*~
 .DS_Store
 Thumbs.db
+desktop.ini

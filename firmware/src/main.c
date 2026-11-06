@@ -13,11 +13,14 @@
 //  v6: pairing key guard - restores a controller's key when Bluepad32 deletes it after a failed reconnect
 //  v7: pairing window - new controllers only while open (hold the case button 2 s, release); otherwise
 //      controllers in pairing mode are ignored, so pairing one with a phone/PC isn't taken over
+//  v8: Wi-Fi - web page (http://bc250.local) and Home Assistant (MQTT); low-battery warning
 
 #include <stdio.h>
 
 #include "bt_bridge.h"
 #include "log.h"
+#include "net.h"
+#include "settings.h"
 #include "pads.h"
 #include "config.h"
 #include "hardware/gpio.h"
@@ -45,6 +48,8 @@ static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time(
 static void set_state(state_t s) {
     if (s == state) return;
     printf("bc250: %s -> %s\n", state_name[state], state_name[s]);
+    net_notify_change();
+    net_console_on(s != ST_OFF);
     state = s;
     state_since = now_ms();
 }
@@ -69,11 +74,12 @@ static bool debounce(debounce_t* d, bool raw, uint32_t t, uint32_t ms) {
 }
 
 static debounce_t btn_db, tpm_db;
+static bool battery_low_any;   // v8: a connected controller is low (LED dip)
 static uint32_t btn_down_at;
 static bool btn_long_fired;
 static uint32_t tpm_low_since;
 
-typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG, BTN_PAIR } btn_event_t;
+typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG, BTN_PAIR, BTN_WIFI } btn_event_t;
 
 static btn_event_t poll_button(uint32_t t) {
     bool pressed = !gpio_get(PIN_BUTTON);
@@ -83,6 +89,7 @@ static btn_event_t poll_button(uint32_t t) {
             btn_long_fired = false;
         } else if (!btn_long_fired) {
             uint32_t held = t - btn_down_at;
+            if (state == ST_OFF && held >= WIFI_HOLD_MS) return BTN_WIFI;   // v8: console off, 8 s: Wi-Fi on
             if (held >= PAIR_HOLD_MS) {
                 // 2 s+ hold: pairing window (with the PSU on, only up to PAIR_HOLD_MAX_MS; 5 s = force off)
                 if (state == ST_OFF || held < PAIR_HOLD_MAX_MS) return BTN_PAIR;
@@ -91,7 +98,8 @@ static btn_event_t poll_button(uint32_t t) {
             return BTN_SHORT;
         }
     }
-    if (btn_db.stable && !btn_long_fired && t - btn_down_at >= BUTTON_LONG_PRESS_MS) {
+    // 5 s force-off only matters with the PSU on; with it off, longer holds are pairing / Wi-Fi (on release)
+    if (state != ST_OFF && btn_db.stable && !btn_long_fired && t - btn_down_at >= BUTTON_LONG_PRESS_MS) {
         btn_long_fired = true;
         return BTN_LONG;
     }
@@ -171,6 +179,8 @@ static void led_task(uint32_t t) {
         level = ((t / LED_BLINK_STARTING_MS) & 1) ? 0 : LED_BRIGHTNESS_ON;
     else
         level = LED_BRIGHTNESS_ON;
+    // Low battery (v8): short dark blink every 3 s while the console is on
+    if (state == ST_RUNNING && battery_low_any && (t % 3000) < 150) level = 0;
     // Pairing window: double blink (two short flashes every second)
     if (bt_pairing_active()) {
         uint32_t ph = t % 1000;
@@ -182,6 +192,7 @@ static void led_task(uint32_t t) {
     if (btn_db.stable && !btn_long_fired) {
         uint32_t held = t - btn_down_at;
         if (state != ST_OFF && held >= PAIR_HOLD_MAX_MS) level = 0;
+        else if (state == ST_OFF && held >= WIFI_HOLD_MS) level = LED_BRIGHTNESS_ON;   // "release = Wi-Fi on"
         else if (held >= PAIR_HOLD_MS) level = ((t / 60) & 1) ? LED_BRIGHTNESS_ON : 0;
     }
     pwm_set_gpio_level(PIN_LED, level);
@@ -320,6 +331,90 @@ static void print_status(void) {
            state_name[state], gpio_get(PIN_PSU), usb_allowed(), vbus_present, b);
 }
 
+// ------------------------------------------------------------------ v8: Wi-Fi requests, status, low battery
+static volatile net_req_t net_req;   // set from lwIP callbacks / log port, handled in app_tick
+
+void app_request(net_req_t r) { net_req = r; }
+
+static int battery_pct(uint8_t b) {   // Bluepad32: 1 = empty .. 255 = full, 0 = unknown
+    if (!b) return -1;
+    int p = ((int)b - 1) * 100 / 250;
+    return p > 100 ? 100 : p;
+}
+
+void app_get_status(app_status_t* st) {
+    st->state = state_name[state];
+    st->psu = gpio_get(PIN_PSU);
+    st->uptime_s = now_ms() / 1000;
+    st->pairing = cyw43_ok && bt_pairing_active();
+    st->pads = 0;
+    st->battery_min = -1;
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (!pads[i].used) {
+            st->battery[i] = -2;   // empty slot
+            continue;
+        }
+        st->pads++;
+        int p = battery_pct(pads[i].battery);
+        st->battery[i] = p;
+        if (p >= 0 && (st->battery_min < 0 || p < st->battery_min)) st->battery_min = p;
+    }
+}
+
+static void net_requests(void) {
+    net_req_t r = net_req;
+    if (r == NET_REQ_NONE) return;
+    net_req = NET_REQ_NONE;
+    switch (r) {
+        case NET_REQ_ON:
+            if (state == ST_OFF) power_on("web / Home Assistant");
+            break;
+        case NET_REQ_SHUTDOWN:
+            if (state == ST_RUNNING || state == ST_STOPPING) {
+                if (request_power_key()) set_state(ST_STOPPING);
+                else printf("bc250: USB not connected - cannot send power key\n");
+            }
+            break;
+        case NET_REQ_FORCE_OFF:
+            if (state != ST_OFF) power_off("web / Home Assistant: force off");
+            break;
+        case NET_REQ_PAIR:
+            if (cyw43_ok) bt_pairing_start();
+            break;
+        default:
+            break;
+    }
+}
+
+static uint32_t battery_warned_at[MAX_PADS];
+static uint8_t battery_last[MAX_PADS];
+
+static void battery_task(uint32_t t) {
+    static uint32_t checked_at;
+    if (t - checked_at < 2000) return;
+    checked_at = t;
+    bool any = false;
+    for (int i = 0; i < MAX_PADS; i++) {
+        uint8_t b = pads[i].used ? pads[i].battery : 0;
+        if (b != battery_last[i]) {
+            battery_last[i] = b;
+            net_notify_change();
+        }
+        bool low = b && b <= LOW_BATTERY_LEVEL;
+        if (!low) {
+            battery_warned_at[i] = 0;
+            continue;
+        }
+        any = true;
+        if (!battery_warned_at[i] || t - battery_warned_at[i] >= LOW_BATTERY_REMIND_MS) {
+            battery_warned_at[i] = t ? t : 1;
+            printf("bc250: controller %d battery low (%d %%)\n", i + 1, battery_pct(b));
+            bt_rumble((uint8_t)i, 200, 200);   // short buzz; it stops by itself
+        }
+    }
+    battery_low_any = any;
+}
+
 static void app_tick(uint32_t t) {
     btn_event_t btn = poll_button(t);
     debounce(&tpm_db, gpio_get(PIN_TPM), t, TPM_DEBOUNCE_MS);
@@ -337,9 +432,14 @@ static void app_tick(uint32_t t) {
         power_off("button held");
         return;
     }
-    // Hold 2 s and release (or keep holding while off): open the pairing window
-    if (btn == BTN_PAIR || (btn == BTN_LONG && state == ST_OFF)) {
+    // Hold 2 s and release: open the pairing window
+    if (btn == BTN_PAIR) {
         if (cyw43_ok) bt_pairing_start();
+        return;
+    }
+    // Console off, hold 8 s and release: Wi-Fi on (v8, every Wi-Fi mode)
+    if (btn == BTN_WIFI) {
+        if (cyw43_ok) net_wifi_request();
         return;
     }
 
@@ -433,6 +533,11 @@ static void app_tick(uint32_t t) {
         print_status();
     }
     log_task();   // USB serial log port (idle identity only)
+    if (cyw43_ok) {
+        net_requests();
+        battery_task(t);
+        net_task(t);
+    }
 }
 
 // ------------------------------------------------------------------ main
@@ -454,7 +559,7 @@ int main(void) {
     stdio_init_all();   // UART0 on GP0/GP1 (debug log only, nothing needs to be connected)
     log_init(watchdog_caused_reboot());   // RAM log, kept across self-restarts
     log_set_status_fn(print_status);
-    printf("\nbc250: power controller starting (firmware v7)\n");
+    printf("\nbc250: power controller starting (firmware v8)\n");
     if (watchdog_caused_reboot()) {
         uint32_t r = watchdog_hw->scratch[0];
         if ((r & 0xFFFF0000u) == RESTART_MAGIC && (r & 0xFFFF) <= RS_IDLE)
@@ -479,6 +584,8 @@ int main(void) {
         bt_bridge_start();
         ctx = cyw43_arch_async_context();
         cyw43_ok = true;
+        settings_load();   // v8: Wi-Fi / MQTT settings from flash
+        net_init();
     }
 
     // Start from the real button state so a press held during power-up is not seen as a click

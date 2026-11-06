@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BC-250 settings</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>Settings</h1>
+
+  <div class="card">
+    <h2>Wi-Fi</h2>
+    <div class="mut" id="wnow"></div>
+    <label for="net">Network</label>
+    <select id="net" onchange="netChanged()"><option value="">Loading…</option></select>
+    <div id="manual" style="display:none"><label for="ssid">Network name</label><input id="ssid" autocomplete="off" autocapitalize="none"></div>
+    <label for="pass">Password</label><input id="pass" type="password" autocomplete="new-password" placeholder="unchanged">
+    <div class="mut" style="margin-top:6px">2.4 GHz only. After changing the network, the page answers again once your phone is on that network too.</div>
+    <label for="mode">Wi-Fi is on</label>
+    <select id="mode">
+      <option value="2">Only when I turn it on (button 8 s)</option>
+      <option value="1">Only while the console is off</option>
+      <option value="0">Always</option>
+      <option value="3">Never</option>
+    </select>
+    <div class="mut" id="modehelp" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h2>PIN for the buttons</h2>
+    <div class="mut" id="pinnow"></div>
+    <label for="pin">New PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="new-password">
+    <div class="chk"><input type="checkbox" id="pinclear"><label for="pinclear" style="margin:0">Remove the PIN</label></div>
+  </div>
+
+  <details class="card" id="hacard" style="display:none">
+    <summary><b>Home Assistant (MQTT)</b> <span class="mut">optional</span></summary>
+    <label for="mh">Broker address (empty = off)</label><input id="mh" autocomplete="off" autocapitalize="none">
+    <label for="mp">Port</label><input id="mp" type="number" min="1" max="65535">
+    <label for="mu">User</label><input id="mu" autocomplete="off" autocapitalize="none">
+    <label for="mw">Password</label><input id="mw" type="password" autocomplete="new-password">
+    <div class="mut" style="margin-top:6px">The BC-250 then appears in Home Assistant by itself (MQTT discovery).</div>
+  </details>
+
+  <button onclick="save()" id="save">Save</button>
+  <div id="msg" class="mut" style="margin-top:10px;min-height:20px"></div>
+  <div class="foot"><a href="/">Back</a></div>
+</main>
+<script src="/app.js"></script>
+<script>
+let cur = {};
+
+function netChanged() {
+  const v = $('net').value;
+  $('manual').style.display = v === '__other' ? 'block' : 'none';
+  $('pass').placeholder = (v === cur.ssid) ? 'unchanged' : '';
+}
+
+async function loadNets() {
+  try {
+    await post('/api/networks/scan');
+    for (let k = 0; k < 8; k++) {   // scanning takes a few seconds
+      const r = await (await fetch('/api/networks')).json();
+      if (!r.scanning || k === 7) { fill(r.list); return; }
+      await new Promise(res => setTimeout(res, 1000));
+    }
+  } catch (e) { fill([]); }
+}
+function fill(list) {
+  const sel = $('net');
+  const names = list.map(n => n.ssid);
+  if (cur.ssid && !names.includes(cur.ssid)) names.unshift(cur.ssid);
+  sel.innerHTML = names.map(n => '<option value="' + esc(n) + '">' + esc(n) + (n === cur.ssid ? ' (current)' : '') + '</option>').join('') +
+    '<option value="__other">Other network…</option>';
+  sel.value = cur.ssid || (names[0] || '__other');
+  netChanged();
+}
+
+async function load() {
+  const r = await api('/api/settings');
+  if (!r || !r.ok) { $('msg').textContent = 'Could not load settings'; return; }
+  cur = await r.json();
+  $('wnow').textContent = cur.ssid ? 'Connected to ' + cur.ssid : 'No network saved';
+  $('pinnow').textContent = cur.pin ? 'A PIN is set.' : 'No PIN: anyone on your network can use the buttons.';
+  if (cur.ha) $('hacard').style.display = '';   // only the Home Assistant firmware has this section
+  $('mode').value = String(cur.wifi_mode);
+  modeHelp();
+  $('mh').value = cur.mqtt_host; $('mp').value = cur.mqtt_port; $('mu').value = cur.mqtt_user;
+  $('mw').placeholder = cur.mqtt_pass ? 'unchanged' : '';
+  loadNets();
+}
+
+const HELP = {
+  '2': 'Off normally. To use this page: console off, hold the case button 8 s until the LED stays lit, release. Wi-Fi then stays on until the page has not been used for 30 min. Home Assistant only works while it is on.',
+  '1': 'Off while you play, so it never disturbs the controllers. While the console is off, you can power it on from here or Home Assistant.',
+  '0': 'Always reachable (page and Home Assistant). Wi-Fi and Bluetooth share one radio: if controllers lag, choose another mode.',
+  '3': 'Off. Holding the case button 8 s (console off) still turns it on for 30 min.'
+};
+function modeHelp() { $('modehelp').textContent = HELP[$('mode').value] || ''; }
+document.addEventListener('DOMContentLoaded', () => $('mode').addEventListener('change', modeHelp));
+
+async function save() {
+  const v = $('net').value;
+  const f = {
+    ssid: v === '__other' ? $('ssid').value.trim() : v,
+    pass: $('pass').value,
+    wifi_mode: $('mode').value,
+    pin: $('pin').value, pin_clear: $('pinclear').checked ? '1' : ''
+  };
+  if (cur.ha) Object.assign(f, { mqtt_host: $('mh').value.trim(), mqtt_port: $('mp').value || '1883',
+                                 mqtt_user: $('mu').value.trim(), mqtt_pass: $('mw').value });
+  $('save').disabled = true;
+  $('msg').textContent = 'Saving…';
+  const r = await post('/api/settings', f);
+  $('save').disabled = false;
+  if (r && r.ok) {
+    const j = await r.json();
+    $('msg').textContent = j.msg;
+    if (f.pin_clear) setPin(''); else if (f.pin) setPin(f.pin);
+    $('pass').value = ''; $('mw').value = ''; $('pin').value = ''; $('pinclear').checked = false;
+  } else {
+    $('msg').textContent = 'Failed' + (r ? ' (' + r.status + ')' : '');
+  }
+}
+load();
+</script>
+</body>
+</html>

@@ -5,6 +5,11 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 - **Case button** short press: PSU on (the BC-250 auto-boots) / clean SteamOS shutdown (USB power key)
 - **Case button held 5 s:** force the PSU off
+- **Wi-Fi (optional):** a phone page / home-screen icon (`http://bc250.local`): power on, shut down, your controllers
+  with battery, pair new ones, forget old ones. **Home Assistant** via MQTT (separate firmware file). Set up from your phone in a minute.
+  Wi-Fi runs only when you want it: on request (default), only while the console is off, always, or never
+- **Low-battery warning:** the controller rumbles and the button LED blinks when a DualSense / DualShock is at 20 % or less
+- **Case button held 8 s (console off):** Wi-Fi on for the phone page
 - **Case button held 2 s:** pairing window, which accepts a new controller for 60 s. Outside it, controllers in
   pairing mode are ignored, so you can still pair yours with a phone or PC
 - **Bluetooth controller** (DualSense, DS4, Switch Pro, Xbox, 8BitDo…): pressing PS / Xbox / Home wakes the board,
@@ -24,21 +29,34 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 | [`firmware/`](firmware/) | Pico 2 W firmware (C, Pico SDK 2.3.1 + Bluepad32). Ready-to-flash file in [`firmware/release/`](firmware/release/) |
 | [`pcb/`](pcb/) | Printed board, v9: KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
 | [`perfboard/`](perfboard/) | Test board on a 70×90 mm perfboard: hole-by-hole map |
+| [`.github/workflows/`](.github/workflows/) | Automatic firmware build on GitHub; a version tag (`v8`) publishes a Release with both `.uf2` files |
 | [`docs/`](docs/) | Build plan: wiring to the BC-250, Pico pins, SteamOS settings, mounting |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes: what's new, fixed and known issues in each firmware and PCB version |
 | [`bom.csv`](bom.csv) | Parts list for both boards (opens in Excel; GitHub shows it as a table) |
 
 ## Quick start
 
-1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v7.uf2` onto the `RP2350` drive.
+1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v8.uf2` onto the `RP2350` drive
+   (or `bc250_power_v8_ha.uf2` if you use Home Assistant).
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
 4. **Pair a controller:** hold the case button 2 s and release (LED double-blinks), then put the controller in
    pairing mode within 60 s. Pairing turns the BC-250 on if it was off (expected).
+5. **Optional Wi-Fi:** console off, hold the case button **8 s** (LED stays lit), release. On your phone tap the
+   Wi-Fi **`BC250-setup`**; the setup page opens by itself. Pick your network, type its password, done. Then open
+   `http://bc250.local` and *Add to Home Screen*. Wi-Fi switches itself off when unused (Settings → "Wi-Fi is on").
 
 ## Downsides and known limitations
 
 **Testing status**
-- **Firmware v7 compiles cleanly but hasn't been tested on real hardware yet** (v4 and v5 ran on the real board).
+- **Firmware v8 compiles cleanly but hasn't been tested on real hardware yet** (v4 and v5 ran on the real board).
+  Its web page was tested in a browser against a simulated Pico.
+- **Wi-Fi and Bluetooth share one radio chip.** If controllers lag with Wi-Fi "Always", use "Only while the console
+  is off" (Settings). Home Assistant only sees the BC-250 while Wi-Fi is on. Wi-Fi is 2.4 GHz only and adds a little standby power. Until a network is saved (or when it
+  stays unreachable), the Pico runs the open setup Wi-Fi `BC250-setup`; someone nearby could set it up first.
+  `bc250.local` doesn't open on some Android phones: use the Pico's address from your router. Without a PIN (`pin 1234`), anyone on your
+  network can use the web page's buttons.
+- **Battery level only for DualSense / DualShock**; Xbox, Switch Pro and 8BitDo don't report it to the Pico.
   Its key guard works around a Bluepad32 behaviour: after one failed reconnect Bluepad32 deletes the controller's
   pairing key, which made controllers "search" forever until re-paired. The Bluetooth repair from v5 stays for
   real radio hangs. The log (`sudo cat /dev/ttyACM0`) shows which one happened.
@@ -93,8 +111,11 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 | | Version | Date |
 |---|---|---|
-| Firmware | v7 – pairing window (hold button 2 s), pairing key guard, Bluetooth repair while running, event log over USB serial | 2026-11-06 |
+| Firmware | v8 – Wi-Fi phone page (setup from the phone, controller list, pairing, forget) + Home Assistant, low-battery warning, pairing window, key guard, Bluetooth repair, event log | 2026-11-06 |
 | PCB | v9 – corrected ATX header (5.5 mm rows, pin 1 at the front, peg holes) | 2026-10-19 |
 | Perfboard map | v16 (ATX header superseded by PCB v9) | 2026-10-18 |
 
-Full change history: [`firmware/README.md`](firmware/README.md), [`pcb/README.md`](pcb/README.md).
+**Building:** `bash firmware/build.sh` (library versions pinned in `firmware/deps.env`), or download the `.uf2` from
+GitHub (Actions / Releases).
+
+**Release notes for every version:** [`CHANGELOG.md`](CHANGELOG.md). Technical details: [`firmware/README.md`](firmware/README.md), [`pcb/README.md`](pcb/README.md).

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BC-250 setup</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>Connect BC-250 to your Wi-Fi</h1>
+  <div class="card" id="form">
+    <div class="mut" style="margin-bottom:10px">Choose your network (2.4 GHz):</div>
+    <div id="nets" class="mut">Looking for networks…</div>
+    <div class="net" onclick="pick(null)" id="other"><div class="grow">Other network…</div></div>
+    <div id="manual" style="display:none">
+      <label for="ssid">Network name</label><input id="ssid" autocomplete="off" autocapitalize="none">
+    </div>
+    <div id="pwbox" style="display:none">
+      <label for="pass">Password</label><input id="pass" type="password" autocomplete="off">
+    </div>
+    <button style="margin-top:14px" id="go" onclick="connect()" disabled>Connect</button>
+  </div>
+  <div class="card" id="done" style="display:none">
+    <div class="ok" style="font-size:18px">Saved ✓</div>
+    <p>The BC-250 is joining <b id="joined"></b>. This setup Wi-Fi switches off now.</p>
+    <p>Put your phone back on your normal Wi-Fi and open <b>http://bc250.local</b>.<br>
+       Then use <b>Add to Home Screen</b> in your browser's menu to get a BC-250 icon.</p>
+    <p class="mut">If it doesn't connect (wrong password), this setup Wi-Fi comes back after 5 minutes.</p>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+let chosen = null;   // ssid, or '' for "other"
+let locked = true;
+
+function pick(n) {
+  document.querySelectorAll('.net').forEach(e => e.classList.remove('sel'));
+  if (n === null) {
+    chosen = '';
+    $('other').classList.add('sel');
+    $('manual').style.display = 'block';
+    $('pwbox').style.display = 'block';
+  } else {
+    chosen = n.ssid;
+    locked = n.lock;
+    document.querySelector('[data-ssid="' + CSS.escape(n.ssid) + '"]').classList.add('sel');
+    $('manual').style.display = 'none';
+    $('pwbox').style.display = n.lock ? 'block' : 'none';
+    if (n.lock) $('pass').focus();
+  }
+  $('go').disabled = false;
+}
+
+async function load() {
+  try {
+    const r = await (await fetch('/api/networks')).json();
+    window.nets = r.list;
+    $('nets').innerHTML = r.list.length ? '' : 'No networks found. Use "Other network…".';
+    r.list.forEach((n, i) => {
+      const d = document.createElement('div');
+      d.className = 'net';
+      d.dataset.ssid = n.ssid;
+      d.innerHTML = '<div class="grow">' + esc(n.ssid) + '</div><span class="mut">' + (n.lock ? '🔒 ' : '') +
+        (n.rssi > -60 ? '▂▄▆' : n.rssi > -75 ? '▂▄' : '▂') + '</span>';
+      d.onclick = () => pick(n);
+      $('nets').appendChild(d);
+    });
+  } catch (e) { $('nets').textContent = 'Could not load the network list. Use "Other network…".'; }
+}
+
+async function connect() {
+  const ssid = chosen === '' ? $('ssid').value.trim() : chosen;
+  if (!ssid) { $('ssid').focus(); return; }
+  $('go').disabled = true;
+  $('go').textContent = 'Saving…';
+  const r = await post('/api/settings', { ssid: ssid, pass: $('pass').value });
+  if (r && r.ok) {
+    $('form').style.display = 'none';
+    $('joined').textContent = ssid;
+    $('done').style.display = 'block';
+  } else {
+    $('go').disabled = false;
+    $('go').textContent = 'Connect';
+    alert('Saving failed' + (r ? ' (' + r.status + ')' : ''));
+  }
+}
+load();
+</script>
+</body>
+</html>

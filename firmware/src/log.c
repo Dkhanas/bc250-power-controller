@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "bt_bridge.h"
+#include "settings.h"
 #include "config.h"
 #include "hardware/sync.h"
 #include "pico/stdio/driver.h"
@@ -72,46 +73,63 @@ static uint32_t pos;   // next byte of the ring to send
 
 static void help(void) {
     printf("bc250: log commands: s = status, p = open pairing window, r = restart Bluetooth now (test), c = clear log, h = help\n");
+    printf("bc250: settings: wifi NETWORK|PASSWORD, wifi off, mqtt HOST[:PORT] [USER|PASSWORD], mqtt off, pin 1234, pin off, net\n");
 }
 
 void log_task(void) {
     bool conn = tud_cdc_connected();
     if (conn && !was_connected) {
         pos = ring.total > LOG_SIZE ? ring.total - LOG_SIZE : 0;   // send the whole ring first
-        printf("bc250: log port opened (firmware v7, %lu starts since power-on)\n", (unsigned long)ring.boots);
+        printf("bc250: log port opened (firmware v8, %lu starts since power-on)\n", (unsigned long)ring.boots);
         help();
     }
     was_connected = conn;
     if (!conn) return;
 
-    // commands
+    // commands: one per line ("s", "p", ... or "wifi ...", "mqtt ...", "pin ...", "net")
+    static char line[160];
+    static uint8_t ll;
     while (tud_cdc_available()) {
         int c = tud_cdc_read_char();
-        switch (c) {
-            case 's': case 'S':
-                if (status_fn) status_fn();
-                break;
-            case 'p': case 'P':
-                bt_pairing_start();
-                break;
-            case 'r': case 'R':
-                printf("bc250: Bluetooth restart requested\n");
-                bt_restart_now();
-                break;
-            case 'c': case 'C': {
-                uint32_t save = save_and_disable_interrupts();
-                ring.total = 0;
-                ring.line_start = true;
-                pos = 0;
-                restore_interrupts(save);
-                printf("bc250: log cleared\n");
-                break;
+        if (c < 0) break;
+        if (c != '\r' && c != '\n') {
+            if (ll < sizeof(line) - 1) line[ll++] = (char)c;
+            continue;
+        }
+        if (!ll) continue;
+        line[ll] = 0;
+        ll = 0;
+        if (settings_command(line)) continue;   // never echoes the line (passwords)
+        if (line[1] == 0) {
+            switch (line[0]) {
+                case 's': case 'S':
+                    if (status_fn) status_fn();
+                    break;
+                case 'p': case 'P':
+                    bt_pairing_start();
+                    break;
+                case 'r': case 'R':
+                    printf("bc250: Bluetooth restart requested\n");
+                    bt_restart_now();
+                    break;
+                case 'c': case 'C': {
+                    uint32_t save = save_and_disable_interrupts();
+                    ring.total = 0;
+                    ring.line_start = true;
+                    pos = 0;
+                    restore_interrupts(save);
+                    printf("bc250: log cleared\n");
+                    break;
+                }
+                case 'h': case 'H': case '?':
+                    help();
+                    break;
+                default:
+                    printf("bc250: unknown command (h = help)\n");
+                    break;
             }
-            case 'h': case 'H': case '?':
-                help();
-                break;
-            default:
-                break;
+        } else {
+            printf("bc250: unknown command (h = help)\n");
         }
     }
 

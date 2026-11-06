@@ -27,4 +27,23 @@ bool bt_restarting(void);      // Bluetooth restart in progress (don't touch the
 // still reconnect). Closes after PAIRING_WINDOW_MS or as soon as a new controller is paired.
 void bt_pairing_start(void);
 bool bt_pairing_active(void);
+
+// v8: for the web page
+typedef struct {
+    char addr[18];     // "AA:BB:CC:DD:EE:FF"
+    char name[24];
+    bool connected;
+    int battery;       // %, -1 = unknown / not connected
+} bt_ctrl_info_t;
+int bt_controllers(bt_ctrl_info_t* out, int max);   // controllers paired with the Pico
+bool bt_forget(const char* addr);                   // unpair one ("AA:BB:..."); false if unknown
+
+typedef struct {
+    bool active;
+    int left_s;
+    uint32_t seq;      // changes when a pairing window ends
+    char result[8];    // "paired" / "timeout" / ""
+    char name[24];     // what got paired
+} bt_pair_info_t;
+void bt_pairing_info(bt_pair_info_t* pi);
 void bt_restart_now(void);     // manual restart (log port command), for testing

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <btstack.h>
 #include "btstack_tlv.h"
+#include "net.h"
 #include "ble/le_device_db.h"
 #include <uni.h>
 
@@ -47,6 +48,9 @@ static uint32_t pair_until;
 static bd_addr_t pair_addr;
 static bool pair_addr_set;
 static bd_addr_t ign_addr;      // rate-limit the "ignored" log line
+static uint32_t pair_seq;       // v8: bumped when a pairing window ends (paired / timed out)
+static char pair_res[8];        // "paired" / "timeout"
+static char pair_name[24];
 static uint32_t ign_logged_at;
 
 static uint32_t pw_now(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -55,6 +59,7 @@ void bt_pairing_start(void) {
     pair_on = true;
     pair_until = pw_now() + PAIRING_WINDOW_MS;
     pair_addr_set = false;
+    pair_res[0] = 0;
     logi("bc250: pairing window open for %lu s - put the new controller in pairing mode now\n",
          (unsigned long)(PAIRING_WINDOW_MS / 1000));
 }
@@ -62,6 +67,9 @@ void bt_pairing_start(void) {
 bool bt_pairing_active(void) {
     if (pair_on && (int32_t)(pw_now() - pair_until) >= 0) {
         pair_on = false;
+        snprintf(pair_res, sizeof(pair_res), "timeout");
+        pair_name[0] = 0;
+        pair_seq++;
         logi("bc250: pairing window closed (time up)\n");
     }
     return pair_on;
@@ -79,7 +87,9 @@ static bool le_bonded(bd_addr_t addr) {
     }
     return false;
 }
-static void kb_note_ready(bd_addr_t addr);
+static void kb_note_ready(uni_hid_device_t* d);
+static uint8_t ctype_of(uni_hid_device_t* d);
+static const char* ctype_name(uint8_t t);
 
 static const uint8_t fetch_ds5[] = {0x09, 0x20, 0x05};   // pairing (MAC), firmware, calibration
 static const uint8_t fetch_ds4[] = {0x05, 0xA3};         // calibration (BT layout), firmware
@@ -373,9 +383,12 @@ static uni_error_t p_on_device_ready(uni_hid_device_t* d) {
     bt_note_ready();
     if (pair_on && pair_addr_set && bd_addr_cmp(pair_addr, d->conn.btaddr) == 0) {
         pair_on = false;
+        snprintf(pair_res, sizeof(pair_res), "paired");
+        snprintf(pair_name, sizeof(pair_name), "%s", d->name[0] ? d->name : ctype_name(ctype_of(d)));
+        pair_seq++;
         logi("bc250: new controller %s paired - pairing window closed\n", bd_addr_to_str(d->conn.btaddr));
     }
-    kb_note_ready(d->conn.btaddr);   // v6: back up this controller's pairing key
+    kb_note_ready(d);   // v6/v8: remember this controller and back up its pairing key
     logi("bc250: controller ready in slot %d (kind %d, pid %04x)\n", i, p->kind, p->pid);
     return UNI_ERROR_SUCCESS;
 }
@@ -385,7 +398,7 @@ static void p_on_controller_data(uni_hid_device_t* d, uni_controller_t* ctl) {
     int i = slot_of(d);
     if (i < 0) return;
     const uni_gamepad_t* gp = &ctl->gamepad;
-
+    pads[i].battery = ctl->battery;   // v8
     uint32_t now_buttons = ((uint32_t)gp->buttons) | ((uint32_t)gp->misc_buttons << 16) | ((uint32_t)gp->dpad << 24);
     if (now_buttons & ~bs[i].prev_buttons) bt_ev_activity++;   // a new press
     bs[i].prev_buttons = now_buttons;
@@ -421,20 +434,33 @@ static struct uni_platform platform = {
     .get_property = p_get_property,
 };
 
-// ------------------------------------------------------------------ pairing key guard (v6)
+// ------------------------------------------------------------------ controller registry + pairing key guard (v6/v8)
 // Bluepad32 deletes a controller's stored link key whenever opening its L2CAP channel fails once
 // (uni_bt_bredr.c, on_l2cap_channel_opened). After that the controller keeps reconnecting with its
 // key, the Pico has none, and only re-pairing helps. We keep our own copy of every key that worked
 // (in the same flash TLV store, under our own tags) and put it back as soon as it disappears.
+// v8: the same table remembers each controller's name and type for the web page's controller list,
+// including Bluetooth LE controllers (no classic key to guard; their bond is in BTstack's LE device db).
 
 #define KEYBK_MAX 8
 #define KEYBK_TAG(i) (0x42434B00u | (uint32_t)(i))   // 'B' 'C' 'K' + index
+
+typedef struct {   // v6 layout (24 bytes), still read
+    bd_addr_t addr;
+    link_key_t key;
+    uint8_t type;
+    uint8_t valid;
+} keybk_v6_t;
 
 typedef struct {
     bd_addr_t addr;
     link_key_t key;
     uint8_t type;
     uint8_t valid;
+    char name[24];
+    uint8_t le;       // 1 = Bluetooth LE controller (no classic key)
+    uint8_t ctype;    // 1 DualShock 4, 2 DualSense, 3 Switch Pro, 4 Xbox, 5 8BitDo, 0 other
+    uint8_t spare[2];
 } keybk_t;
 
 static keybk_t kb[KEYBK_MAX];
@@ -455,51 +481,94 @@ static void kb_load(void) {
     if (!kb_tlv(&impl, &ctx)) return;
     int n = 0;
     for (int i = 0; i < KEYBK_MAX; i++) {
+        memset(&kb[i], 0, sizeof(kb[i]));
         keybk_t e;
-        if (impl->get_tag(ctx, KEYBK_TAG(i), (uint8_t*)&e, sizeof(e)) == (int)sizeof(e) && e.valid == 1) {
+        int got = impl->get_tag(ctx, KEYBK_TAG(i), (uint8_t*)&e, sizeof(e));
+        if (got == (int)sizeof(e) && e.valid == 1) {
+            e.name[sizeof(e.name) - 1] = 0;
             kb[i] = e;
             n++;
-        } else {
-            memset(&kb[i], 0, sizeof(kb[i]));
+        } else if (got == (int)sizeof(keybk_v6_t)) {   // backup from v6/v7: no name yet
+            keybk_v6_t o;
+            if (impl->get_tag(ctx, KEYBK_TAG(i), (uint8_t*)&o, sizeof(o)) == (int)sizeof(o) && o.valid == 1) {
+                bd_addr_copy(kb[i].addr, o.addr);
+                memcpy(kb[i].key, o.key, sizeof(o.key));
+                kb[i].type = o.type;
+                kb[i].valid = 1;
+                n++;
+            }
         }
     }
     kb_loaded = true;
-    logi("bc250: key guard: %d controller key backup(s) loaded\n", n);
+    logi("bc250: key guard: %d controller(s) known\n", n);
 }
 
 static void kb_save(int i) {
     const btstack_tlv_t* impl;
     void* ctx;
     if (!kb_tlv(&impl, &ctx)) return;
-    impl->store_tag(ctx, KEYBK_TAG(i), (const uint8_t*)&kb[i], sizeof(kb[i]));
+    if (kb[i].valid) impl->store_tag(ctx, KEYBK_TAG(i), (const uint8_t*)&kb[i], sizeof(kb[i]));
+    else impl->delete_tag(ctx, KEYBK_TAG(i));
 }
 
-// A controller became ready: its key is good, back it up (flash write only if it changed)
-static void kb_note_ready(bd_addr_t addr) {
+static uint8_t ctype_of(uni_hid_device_t* d) {
+    switch (d->controller_type) {
+        case CONTROLLER_TYPE_PS4Controller: return 1;
+        case CONTROLLER_TYPE_PS5Controller: return 2;
+        case CONTROLLER_TYPE_SwitchProController: return 3;
+        case CONTROLLER_TYPE_XBoxOneController: return 4;
+        case CONTROLLER_TYPE_8BitdoController: return 5;
+        default: return 0;
+    }
+}
+
+static const char* ctype_name(uint8_t t) {
+    static const char* const n[] = {"Controller", "DualShock 4", "DualSense", "Switch Pro", "Xbox", "8BitDo"};
+    return t < sizeof(n) / sizeof(n[0]) ? n[t] : n[0];
+}
+
+static bool le_bonded(bd_addr_t addr);
+
+// A controller became ready: remember it (and back up its classic key). Flash write only if something changed.
+static void kb_note_ready(uni_hid_device_t* d) {
     if (!kb_loaded) kb_load();
     if (!kb_loaded) return;
+    bd_addr_t addr;
+    bd_addr_copy(addr, d->conn.btaddr);
     link_key_t key;
-    link_key_type_t type;
-    if (!gap_get_link_key_for_bd_addr(addr, key, &type)) return;
+    link_key_type_t type = (link_key_type_t)0;
+    bool classic = gap_get_link_key_for_bd_addr(addr, key, &type);
+    bool le = !classic && le_bonded(addr);
+    if (!classic && !le) return;   // not bonded (shouldn't happen for a ready controller)
+    if (!classic) memset(key, 0, sizeof(key));
+
     int slot = -1;
     for (int i = 0; i < KEYBK_MAX && slot < 0; i++)
         if (kb[i].valid && bd_addr_cmp(kb[i].addr, addr) == 0) slot = i;
-    if (slot >= 0 && memcmp(kb[slot].key, key, sizeof(key)) == 0 && kb[slot].type == (uint8_t)type) return;
+    keybk_t e;
+    memset(&e, 0, sizeof(e));
+    if (slot >= 0) e = kb[slot];
+    bd_addr_copy(e.addr, addr);
+    memcpy(e.key, key, sizeof(key));
+    e.type = (uint8_t)type;
+    e.valid = 1;
+    e.le = le ? 1 : 0;
+    uint8_t ct = ctype_of(d);
+    if (ct) e.ctype = ct;
+    if (d->name[0]) snprintf(e.name, sizeof(e.name), "%s", d->name);
+    if (slot >= 0 && memcmp(&e, &kb[slot], sizeof(e)) == 0) return;   // nothing new
     for (int i = 0; i < KEYBK_MAX && slot < 0; i++)
         if (!kb[i].valid) slot = i;
     if (slot < 0) {
         slot = kb_next;
         kb_next = (uint8_t)((kb_next + 1) % KEYBK_MAX);
     }
-    bd_addr_copy(kb[slot].addr, addr);
-    memcpy(kb[slot].key, key, sizeof(key));
-    kb[slot].type = (uint8_t)type;
-    kb[slot].valid = 1;
+    kb[slot] = e;
     kb_save(slot);
-    logi("bc250: key guard: saved key backup for %s (slot %d)\n", bd_addr_to_str(addr), slot);
+    logi("bc250: key guard: saved %s %s (slot %d)\n", e.name[0] ? e.name : ctype_name(e.ctype), bd_addr_to_str(addr), slot);
 }
 
-// Put back any backed-up key that Bluepad32 has deleted
+// Put back any backed-up classic key that Bluepad32 has deleted
 static void kb_task(uint32_t t) {
     if (!kb_loaded) {
         kb_load();
@@ -508,7 +577,7 @@ static void kb_task(uint32_t t) {
     if (t - kb_checked_at < KEY_GUARD_CHECK_MS) return;
     kb_checked_at = t;
     for (int i = 0; i < KEYBK_MAX; i++) {
-        if (!kb[i].valid) continue;
+        if (!kb[i].valid || kb[i].le) continue;
         link_key_t key;
         link_key_type_t type;
         if (gap_get_link_key_for_bd_addr(kb[i].addr, key, &type)) continue;
@@ -517,6 +586,68 @@ static void kb_task(uint32_t t) {
         logi("bc250: key guard: pairing key for %s was deleted - restored it (%lu so far)\n",
              bd_addr_to_str(kb[i].addr), (unsigned long)kb_restores);
     }
+}
+
+// ---- controller list + pairing status for the web page (v8)
+void bt_pairing_info(bt_pair_info_t* pi) {
+    pi->active = bt_pairing_active();
+    pi->left_s = pi->active ? (int)((pair_until - pw_now()) / 1000) : 0;
+    pi->seq = pair_seq;
+    snprintf(pi->result, sizeof(pi->result), "%s", pair_res);
+    snprintf(pi->name, sizeof(pi->name), "%s", pair_name);
+}
+
+int bt_controllers(bt_ctrl_info_t* out, int max) {
+    if (!kb_loaded) kb_load();
+    int n = 0;
+    for (int i = 0; i < KEYBK_MAX && n < max; i++) {
+        if (!kb[i].valid) continue;
+        bt_ctrl_info_t* c = &out[n++];
+        memset(c, 0, sizeof(*c));
+        snprintf(c->addr, sizeof(c->addr), "%s", bd_addr_to_str(kb[i].addr));
+        snprintf(c->name, sizeof(c->name), "%s", kb[i].name[0] ? kb[i].name : ctype_name(kb[i].ctype));
+        c->battery = -1;
+        for (int s = 0; s < MAX_PADS; s++) {
+            if (pads[s].used && bs[s].dev && bd_addr_cmp(bs[s].dev->conn.btaddr, kb[i].addr) == 0) {
+                c->connected = true;
+                if (pads[s].battery) {
+                    int p = ((int)pads[s].battery - 1) * 100 / 250;
+                    c->battery = p > 100 ? 100 : p;
+                }
+            }
+        }
+    }
+    return n;
+}
+
+bool bt_forget(const char* addr_str) {
+    bd_addr_t addr;
+    if (!sscanf_bd_addr(addr_str, addr)) return false;
+    if (!kb_loaded) kb_load();
+    bool found = false;
+    for (int i = 0; i < KEYBK_MAX; i++) {   // remove our backup first, or the guard would restore the key
+        if (kb[i].valid && bd_addr_cmp(kb[i].addr, addr) == 0) {
+            kb[i].valid = 0;
+            kb_save(i);
+            found = true;
+        }
+    }
+    for (int s = 0; s < MAX_PADS; s++)
+        if (bs[s].dev && bd_addr_cmp(bs[s].dev->conn.btaddr, addr) == 0) uni_hid_device_disconnect(bs[s].dev);
+    gap_drop_link_key_for_bd_addr(addr);   // classic bond
+    int max = le_device_db_max_count();     // LE bond(s)
+    for (int i = 0; i < max; i++) {
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t a;
+        sm_key_t irk;
+        le_device_db_info(i, &type, a, irk);
+        if (type != BD_ADDR_TYPE_UNKNOWN && bd_addr_cmp(a, addr) == 0) {
+            gap_delete_bonding((bd_addr_type_t)type, a);
+            found = true;
+        }
+    }
+    logi("bc250: controller %s forgotten%s\n", bd_addr_to_str(addr), found ? "" : " (wasn't known)");
+    return found;
 }
 
 // ------------------------------------------------------------------ health check + recovery (v5)
@@ -650,6 +781,7 @@ bool bt_health_task(uint32_t t) {
         if (hci_get_state() == HCI_STATE_OFF) {
             logi("bc250: BT restart: stack off after %lu ms, resetting the radio chip\n", (unsigned long)(t - rec_since));
             cyw43_deinit(&cyw43_state);   // WL_REG_ON low; next use powers it up and reloads the firmware
+            net_radio_was_reset();        // v8: Wi-Fi went down with the chip; rejoin afterwards
             for (int i = 0; i < MAX_PADS; i++)   // in case a disconnect callback never came
                 if (pads[i].used || bs[i].dev) p_on_device_disconnected_slot(i);
             uni_bt_setup();               // Bluepad32 setup again (supports repeated calls) -> HCI power on

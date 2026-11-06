@@ -1,0 +1,25 @@
+:root{color-scheme:light dark;--bg:#f4f5f7;--card:#fff;--fg:#1b1f24;--mut:#667080;--acc:#2f7d4f;--warn:#b3261e;--line:#d5d8dd}
+@media(prefers-color-scheme:dark){:root{--bg:#121417;--card:#1c2025;--fg:#e8eaed;--mut:#9aa0a6;--acc:#4fbf7f;--warn:#f28b82;--line:#3a3f46}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,sans-serif}
+main{max-width:440px;margin:0 auto;padding:20px 16px 32px}
+h1{font-size:22px;margin:0 0 14px}h2{font-size:15px;margin:0 0 10px}
+.card{background:var(--card);border-radius:14px;padding:16px;margin-bottom:12px}
+.big{font-size:30px;font-weight:650}.mut{color:var(--mut);font-size:14px}
+.row{display:flex;gap:10px}.row>*{flex:1}
+button{width:100%;padding:14px;border:0;border-radius:10px;font:600 16px system-ui,sans-serif;background:var(--acc);color:#fff;cursor:pointer}
+button.sec{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.small{width:auto;padding:6px 12px;font-size:14px;background:transparent;color:var(--warn);border:1px solid var(--line)}
+button:disabled{opacity:.5}
+.item{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.item:first-of-type{border-top:0}.item .grow{flex:1;min-width:0}
+.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--line);flex:none}.dot.on{background:var(--acc)}
+label{display:block;font-size:14px;color:var(--mut);margin:12px 0 4px}
+input,select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);font:16px system-ui,sans-serif}
+.chk{display:flex;gap:8px;align-items:center;margin-top:12px}.chk input{width:auto}
+.net{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer}
+.net.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}.net .grow{flex:1}
+.foot{text-align:center;margin-top:18px;font-size:14px}.foot a{color:var(--mut);margin:0 8px}
+a{color:var(--acc)}.ok{color:var(--acc);font-weight:600}.bad{color:var(--warn)}
+#pairbox{margin-top:10px}

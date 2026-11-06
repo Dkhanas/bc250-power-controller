@@ -34,6 +34,7 @@ typedef struct {
     native_kind_t kind;     // NAT_NONE = can only be shown as Xbox 360
     uint16_t pid;           // real product id (DS4 v1/v2, DualSense / Edge)
     uint8_t mac[6];         // Bluetooth address, display order (MSB first)
+    uint8_t battery;        // v8: 0 = unknown, 1 = empty .. 255 = full (from Bluepad32)
 
     // Raw feature reports from the controller (report id first)
     pkt_t feat_calib;       // DS4 / DS5: 0x05
