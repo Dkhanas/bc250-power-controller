@@ -1,7 +1,9 @@
 # Builds the firmware on every push / pull request, with the library versions pinned in firmware/deps.env.
 # Both .uf2 files (without / with Home Assistant) are attached to each run (Actions tab -> run -> Artifacts).
-# Pushing a tag like v8 also publishes a GitHub Release with the .uf2 and the "## v8" notes from CHANGELOG.md:
-#   git tag v8 && git push origin v8
+# A GitHub Release with both .uf2 files and the "## v8" notes from CHANGELOG.md is published either
+#   - from GitHub: Actions tab -> Firmware -> "Run workflow" -> type the version (v8) -> Run, or
+#   - from the command line: git tag v8 && git push origin v8
+# Running it again for an existing version replaces the files and notes of that Release.
 name: Firmware
 
 on:
@@ -10,6 +12,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to publish, e.g. v8 (empty = only build)'
+        required: false
+        default: ''
 
 permissions:
   contents: write   # needed to create releases
@@ -43,17 +50,29 @@ jobs:
             firmware/build/bc250_power_ha.uf2
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.version || github.ref_name }}
         run: |
-          # Release notes = the "## <tag> — <date>" section of CHANGELOG.md
-          awk -v t="$GITHUB_REF_NAME" '$0 ~ "^## "t"( |$)" {p=1; next} /^## |^---/ {p=0} p' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            echo "::error::CHANGELOG.md has no '## $GITHUB_REF_NAME — <date>' section. Add the release notes, then tag again."
+          if ! [[ "$TAG" =~ ^v[0-9] ]]; then
+            echo "::error::Version must look like v8 (got '$TAG')."
             exit 1
           fi
-          cp firmware/build/bc250_power.uf2 "bc250_power_${GITHUB_REF_NAME}.uf2"
-          cp firmware/build/bc250_power_ha.uf2 "bc250_power_${GITHUB_REF_NAME}_ha.uf2"
-          gh release create "$GITHUB_REF_NAME" "bc250_power_${GITHUB_REF_NAME}.uf2" "bc250_power_${GITHUB_REF_NAME}_ha.uf2" \
-            --title "Firmware $GITHUB_REF_NAME" --notes-file notes.md
+          # Release notes = the "## <tag> — <date>" section of CHANGELOG.md
+          awk -v t="$TAG" '$0 ~ "^## "t"( |$)" {p=1; next} /^## |^---/ {p=0} p' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## $TAG — <date>' section. Add the release notes, then run again."
+            exit 1
+          fi
+          cp firmware/build/bc250_power.uf2 "bc250_power_${TAG}.uf2"
+          cp firmware/build/bc250_power_ha.uf2 "bc250_power_${TAG}_ha.uf2"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Release exists: replace its files and notes
+            gh release upload "$TAG" "bc250_power_${TAG}.uf2" "bc250_power_${TAG}_ha.uf2" --clobber
+            gh release edit "$TAG" --title "Firmware $TAG" --notes-file notes.md
+          else
+            # New release; creates the tag on this commit if it doesn't exist yet
+            gh release create "$TAG" "bc250_power_${TAG}.uf2" "bc250_power_${TAG}_ha.uf2" \
+              --target "$GITHUB_SHA" --title "Firmware $TAG" --notes-file notes.md
+          fi

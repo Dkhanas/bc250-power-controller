@@ -100,7 +100,7 @@ sudo apt install git cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
 bash firmware/build.sh        # -> firmware/build/bc250_power.uf2 and bc250_power_ha.uf2 (downloads the libraries once into firmware/.deps/)
 ```
 **GitHub builds it too:** every push builds the firmware (Actions tab → the run → *Artifacts*). Pushing a version tag
-publishes a **Release** with both `.uf2` files (`bc250_power_v8.uf2`, `bc250_power_v8_ha.uf2`) to download: `git tag v8 && git push origin v8`.
+publishes a **Release** with both `.uf2` files (`bc250_power_v8.uf2`, `bc250_power_v8_ha.uf2`): on GitHub **Actions → Firmware → Run workflow**, type `v8`, Run (or `git tag v8 && git push origin v8`).
 The Release text is that version's section in [`../CHANGELOG.md`](../CHANGELOG.md) (`## v8 — <date>`); write it before
 tagging, otherwise the release step stops with an error.
 
