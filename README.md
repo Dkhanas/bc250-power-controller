@@ -18,19 +18,19 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 - **Button LED:** slow blink booting, solid running, fast blink shutting down
 - **Second fan** powered from the PSU's 12 V, speed controlled by the BC-250 (J4003)
 
-| Printed board (PCB v11) | Test board (perfboard) |
+| Printed board (PCB v12) | Test board (perfboard) |
 |---|---|
-| ![PCB v11](pcb/images/top.png) | ![Perfboard](perfboard/images/top-view.png) |
+| ![PCB v12](pcb/images/top.png) | ![Perfboard](perfboard/images/top-view.png) |
 
 ## Repository
 
 | Folder | What |
 |---|---|
 | [`firmware/`](firmware/) | Pico 2 W firmware (C, Pico SDK 2.3.1 + Bluepad32). Ready-to-flash file in [`firmware/release/`](firmware/release/) |
-| [`pcb/`](pcb/) | Printed board, v11 (and v9 Gerbers): KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
+| [`pcb/`](pcb/) | Printed board, v12: KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
 | [`perfboard/`](perfboard/) | Test board on a 70×90 mm perfboard: hole-by-hole map |
 | [`.github/workflows/`](.github/workflows/) | Automatic firmware build on GitHub; a version tag (`v8`) publishes a Release with both `.uf2` files |
-| [`docs/`](docs/) | Build plan: wiring to the BC-250, Pico pins, SteamOS settings, mounting |
+| [`docs/`](docs/) | Build plan (wiring to the BC-250, SteamOS settings, mounting) and [pin drawings](docs/pinout.md) of every connector |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes: what's new, fixed and known issues in each firmware and PCB version |
 | [`bom.csv`](bom.csv) | Parts list for both boards (opens in Excel; GitHub shows it as a table) |
 
@@ -40,6 +40,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
    (or `bc250_power_v8_ha.uf2` if you use Home Assistant).
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
+   Pin drawings of every connector (BC-250 J4003 / TPMS1, ATX, board headers, Pico): [`docs/pinout.md`](docs/pinout.md).
 4. **Pair a controller:** hold the case button 2 s and release (LED double-blinks), then put the controller in
    pairing mode within 60 s. Pairing turns the BC-250 on if it was off (expected).
 5. **Optional Wi-Fi:** console off, hold the case button **8 s** (LED stays lit), release. On your phone tap the
@@ -65,10 +66,11 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 - **Bluetooth repair takes a moment:** when Bluetooth is stuck, the Pico notices within about 30 s and restarts
   only Bluetooth, which takes a few more seconds. Until then, PS doesn't reconnect.
 - **The log port only exists while no controller is connected**, so controller identities stay exact.
-- **PCB v9 and v11 were checked with KiCad DRC, not on a built board. They differ only in the ATX pin order:** v9 follows the official
-  connector footprint (pin 1 at the front), v11 has pin 1 at the back. Do the purple-wire check in [`pcb/README.md`](pcb/README.md) before ordering.
+- **PCB v12 was checked with KiCad DRC, not built yet.** Everything except the ATX header was tested on a built v8 board;
+  v12's ATX pin order matches what was measured there with the real PSU cable.
   Check the first board with a multimeter before connecting the PSU (see [`pcb/README.md`](pcb/README.md)).
-- **The perfboard map (v16) has the ATX pin order of PCB v10 / v11 (pin 1 at the back).** Wire it by wire colour, not by the hole numbers.
+  Check the first board with a multimeter before connecting the PSU (see [`pcb/README.md`](pcb/README.md)).
+- **The perfboard map (v16) has the ATX header mirrored.** Wire it by wire colour, not by the hole numbers.
 
 **Controllers**
 - **Whenever a controller joins or leaves, every controller drops for about 0.5 s.** The Pico re-plugs itself on USB
@@ -104,8 +106,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 ## ⚠️ Safety notes
 
 - **ATX header orientation:** the two pin rows are **5.5 mm apart** (PCB v1–v8 used 4.2 mm: never use them).
-  KiCad's official footprint puts pin 1 at the FRONT end with the latch facing the wall (PCB v9); PCB v10 / v11 put it at the BACK.
-  Only one matches your connector, and the wrong one puts 12 V on GND: check with the PSU cable first (see [`pcb/README.md`](pcb/README.md)).
+  With the latch facing the wall, **pin 1 is at the FRONT end** (KiCad's official footprint, measured on a built v8 board).
+  PCB v10 / v11 had it mirrored (12 V on GND): never use them. Use **PCB v9 or v12**.
 - **Pico VBUS (pin 40) stays unconnected** on the board. The USB cable's 5 V (red wire) can leak standby power into a
   switched-off BC-250; firmware v4 and later handle a normal cable (`USE_VBUS_SENSE 1`).
 
@@ -114,8 +116,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 | | Version | Date |
 |---|---|---|
 | Firmware | v8 – Wi-Fi phone page (setup from the phone, controller list, pairing, forget) + Home Assistant, low-battery warning, pairing window, key guard, Bluetooth repair, event log | 2026-11-06 |
-| PCB | v11 – gaps between the front headers; ATX pin 1 at the back (v9: pin 1 at the front); 5.5 mm rows, peg holes | 2026-11-06 |
-| Perfboard map | v16 (ATX pin order as PCB v10 / v11; wire it by wire colour) | 2026-10-18 |
+| PCB | v12 – v9 ATX pin order (confirmed with the real PSU cable) + gaps between the front headers | 2026-11-06 |
+| Perfboard map | v16 (ATX header mirrored – wire it by wire colour) | 2026-10-18 |
 
 **Building:** `bash firmware/build.sh` (library versions pinned in `firmware/deps.env`), or download the `.uf2` from
 GitHub (Actions / Releases).

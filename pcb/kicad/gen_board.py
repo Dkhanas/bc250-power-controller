@@ -29,17 +29,17 @@ XR = round(X0 + 23 * P, 3)            # col 24: fan-GND lane beside the wall-sid
 ATX_CH = round((ATX_X_PICO + ATX_X_WALL) / 2, 3)   # channel between the two pin rows
 ATX_PEG_X = round(ATX_X_PICO + 5.04, 3)            # 5566-24A2 snap-in pegs (3.0 mm NPTH)
 ATX_Y1 = g(1, 5)[1]                   # back end of the header (pins 12 / 24) at row 5
-# v10 (user request): latch faces the wall, pins 13-24 on the wall side, pin 1 at the BACK end.
-# NOTE: this is the mirror of KiCad's 5566-24A2 top view - verify on the real cable before ordering.
-ATX_NET = {3: "GND", 9: "5VSB", 10: "+12V", 16: "PS_ON", 24: "GND"}
+# Latch faces the wall -> pins 13-24 on the wall side, pin 1 at the FRONT end (KiCad 5566-24A2 top view).
+# Measured on a built v8 board with the real PSU cable: 5VSB (pin 9) is the 4th pin from the back in the Pico-side row.
+ATX_NET = {9: "5VSB", 10: "+12V", 15: "GND", 16: "PS_ON"}
 
 def atx_pegs():
     return [(ATX_PEG_X, round(ATX_Y1 - 4.7, 3)), (ATX_PEG_X, round(ATX_Y1 + 50.9, 3))]
 
 def atx_pos(pin):
     if pin <= 12:
-        return (round(ATX_X_PICO, 3), round(ATX_Y1 + (pin - 1) * 4.2, 3))
-    return (round(ATX_X_WALL, 3), round(ATX_Y1 + (pin - 13) * 4.2, 3))
+        return (round(ATX_X_PICO, 3), round(ATX_Y1 + (12 - pin) * 4.2, 3))
+    return (round(ATX_X_WALL, 3), round(ATX_Y1 + (24 - pin) * 4.2, 3))
 
 # ---------------- Pico 2 WH on female headers ------------------------------
 def pico_pin_pos(pin):
@@ -59,10 +59,10 @@ PD = (1.1, 2.0)    # 1N5819 lead
 PARTS = [
     ("J1", "BUTTON", [("1", (14, 27), "GND", *P1), ("2", (13, 27), "BTN", *P1), ("3", (12, 27), "LED+", *P1)],
      ["GND", "C", "LED+"]),
-    ("Q1", "2N2222", [("E", (17, 3), "GND", *PR), ("B", (18, 3), "Q1_BASE", *PR), ("C", (19, 3), "PS_ON", *PR)],
+    ("Q1", "2N2222", [("E", (15, 3), "GND", *PR), ("B", (16, 3), "Q1_BASE", *PR), ("C", (17, 3), "PS_ON", *PR)],
      ["E", "B", "C"]),
     ("R1", "1k", [("1", (14, 5), "GP15", *PR), ("2", (17, 5), "Q1_BASE", *PR)], None),
-    ("R2", "10k", [("1", (18, 5), "Q1_BASE", *PR), ("2", (18, 8), "GND", *PR)], None),
+    ("R2", "10k", [("1", (16, 6), "Q1_BASE", *PR), ("2", (16, 9), "GND", *PR)], None),
     ("R3", "220R", [("1", (15, 21), "GP2", *PR), ("2", (15, 24), "TPM9", *PR)], None),
     ("J2", "TPM9", [("1", (16, 27), "TPM9", *P1)], None),
     ("D1", "1N5819", [("A", (18, 25), "5VSB", *PD), ("K", (14, 25), "VSYS", *PD)], None),
@@ -77,24 +77,22 @@ def path(net, *pts):
 
 TRACES = [
     path("GND", (6, 7), (9, 7), (13, 7)),             # joins both Pico GND pins
-    path("GND", (18, 8), (18, 7), (13, 7)),
-    path("GND", (16, 7), (16, 3), (17, 3)),
+    path("GND", (16, 9), (16, 7), (13, 7)),
+    path("GND", (15, 7), (15, 3)),
     path("GP15", (13, 5), (14, 5)),
-    path("Q1_BASE", (17, 5), (18, 5)),
-    path("Q1_BASE", (18, 5), (18, 3)),
-    ("PS_ON", [atx_pos(16), (ATX_CH, atx_pos(16)[1] - 2.1), (ATX_CH, g(19, 3)[1]), g(19, 3)]),
-    ("GND", [atx_pos(3), g(18, 8)]),
+    path("Q1_BASE", (17, 5), (17, 6), (16, 6), (16, 3)),
+    ("PS_ON", [atx_pos(16), (ATX_CH, atx_pos(16)[1] - 2.1), (ATX_CH, g(17, 3)[1]), g(17, 3)]),
     ("5VSB", [atx_pos(9), (g(18, 1)[0], atx_pos(9)[1]), g(18, 25)]),
-    ("+12V", [atx_pos(10), (g(19, 1)[0], atx_pos(10)[1]), g(19, 26), g(23, 26), g(23, 27)]),
     path("VSYS", (14, 25), (7, 25), (7, 23), (6, 23)),
-    ("GND", [atx_pos(24), (XR, atx_pos(24)[1] + 2.14), g(24, 27)]),
+    ("GND", [atx_pos(15), (XR, atx_pos(15)[1] + 2.14), g(24, 27)]),
+    ("GND", [g(24, 27), (51.0, g(1, 29)[1]), g(14, 29), g(14, 27)]),   # J3 GND -> J1 GND: ties board GND to ATX pin 15
     path("FAN_PWM", (21, 27), (19, 27)),
     path("FAN_TACH", (22, 27), (22, 28), (18, 28), (18, 27)),
     path("GP2", (13, 21), (15, 21)),
 ]
 TOP_TRACES = [
-    # GND link between ATX pins 24 and 3, in the channel between the pin rows
-    ("GND", 0.6, [atx_pos(24), (ATX_CH, atx_pos(24)[1] - 2.1), (ATX_CH, atx_pos(3)[1] + 2.1), atx_pos(3)]),
+    # +12V on top: ATX pin 10 -> J3 pin 3, crossing over the 5VSB trace
+    ("+12V", 1.0, [atx_pos(10), (40.8, atx_pos(10)[1] + 2.54), (40.8, g(1, 26)[1]), g(23, 26), g(23, 27)]),
     # Button J1 at the front edge -> Pico pins 21/22/23, on top, under the Pico
     ("LED+", 0.4, [g(12, 27), g(12, 5), g(6, 5)]),
     ("BTN", 0.4, [g(13, 27), g(13, 28), g(11, 28), g(11, 6), g(6, 6)]),
@@ -133,7 +131,7 @@ def rect_lines(x1, y1, x2, y2):
 def build():
     out = ['(kicad_pcb (version 20221018) (generator pcbnew)\n',
            '  (general (thickness 1.6))\n  (paper "A4")\n',
-           '  (title_block (title "BC-250 power controller") (rev "11") (comment 1 "From perfboard map v16"))\n',
+           '  (title_block (title "BC-250 power controller") (rev "12") (comment 1 "From perfboard map v16"))\n',
            '''  (layers
     (0 "F.Cu" signal) (31 "B.Cu" signal)
     (32 "B.Adhes" user "B.Adhesive") (33 "F.Adhes" user "F.Adhesive")
@@ -198,11 +196,11 @@ def build():
     silk += rect_lines(br, -1.7, ATX_X_PICO + 8.75 - acx, 1.7)        # latch (wall side)
     bw, bh = br, 29.0
     extra = (f'    (fp_text user "LATCH" (at {ATX_X_PICO + 9.7 - acx:.2f} 0 90) (layer "F.SilkS") (tstamp {u()}) {fnt(0.8, 0.12)})\n'
-             f'    (fp_text user "1" (at {atx_pos(1)[0] - acx:.2f} {-bt - 1.0:.2f}) (layer "F.SilkS") (tstamp {u()}) {fnt(0.9, 0.15)})\n')
+             f'    (fp_text user "1" (at {atx_pos(1)[0] - acx:.2f} {bt + 1.0:.2f}) (layer "F.SilkS") (tstamp {u()}) {fnt(0.9, 0.15)})\n')
     for pin, name in ATX_NET.items():
         x, y = atx_pos(pin)
         extra += (f'    (fp_text user "{pin}" (at {x - acx:.2f} {y - acy + 2.0:.2f}) (layer "F.Fab") (tstamp {u()}) {fnt(0.8, 0.12)})\n')
-    out.append(footprint("J5", "ATX24", (acx, acy), pads, silk, ref_at=(-1.6, -bh - 1.0), extra=extra))
+    out.append(footprint("J5", "ATX24", (acx, acy), pads, silk, ref_at=(1.6, -bh - 1.0), extra=extra))
 
     # Small parts
     for ref, val, pl, labels in PARTS:
@@ -239,7 +237,7 @@ def build():
         else:
             ra = (0, -2.0)
         if ref == "R2":
-            ra = (0, -5.4)
+            ra = (2.0, 0)
         if ref == "R3":
             ra = (2.0, 0)
         if ref == "J2":
@@ -279,7 +277,7 @@ def build():
     texts = [
         ("BACK / HONEYCOMB WALL", (BOARD_W / 2 - 6, 1.6), 0.8, "F.SilkS"),
         ("FRONT / OPEN SIDE", (40.0, BOARD_H - 1.2), 0.8, "F.SilkS"),
-        ("BC-250 PWR v11", (g(9.5, 15)[0], 40), 1.2, "B.SilkS"),
+        ("BC-250 PWR v12", (g(9.5, 15)[0], 40), 1.2, "B.SilkS"),
     ]
     for t, (x, y), sz, layer in texts:
         mir = " (justify mirror)" if layer.startswith("B") else ""

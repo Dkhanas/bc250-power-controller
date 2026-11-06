@@ -23,6 +23,8 @@ The button goes in the round hole in the honeycomb wall, ~3–4.5 cm above the f
 Case stays in its normal orientation. The board lies on the floor, button above the back half of the Pico.
 
 ## Pico pins (firmware)
+Drawings of every connector, with what plugs where: [`pinout.md`](pinout.md).
+
 | Pico | Pin | Connects to |
 |---|---|---|
 | GP15 | 20 | R1 1 kΩ -> Q1 base -> PSU PS_ON (high = PSU on) |
@@ -36,9 +38,9 @@ Case stays in its normal orientation. The board lies on the floor, button above 
 Do **not** connect RUN, VREF, 3V3, 3V3_EN, **VBUS (pin 40)**: 5VSB on VBUS back-feeds the BC-250 through the USB cable.
 
 ## ATX 24-pin (Molex Mini-Fit Jr 5566-24A2)
-Used pins (PCB v10 / v11): **9** 5VSB (purple), **10** +12V (yellow), **3** and **24** GND (black), **16** PS_ON (green). PCB v9 uses **15** GND instead of 3 / 24.
-The two rows are 5.5 mm apart and the latch faces the wall. PCB v10 / v11 have pin 1 at the BACK end, PCB v9 at the FRONT
-(KiCad's official footprint): check which matches your cable before ordering (see `pcb/README.md`).
+Used pins: **9** 5VSB (purple), **10** +12V (yellow), **15** GND (black), **16** PS_ON (green).
+With the latch facing the wall, pin 1 is at the FRONT end and the two rows are 5.5 mm apart (measured on a built v8 board;
+PCB v10 / v11 had it mirrored – don't use them).
 Before first power-up, plug the PSU cable in (PSU off) and check each wire colour sits on the right pad;
 with the PSU on mains, pad 9 must read +5 V to GND.
 

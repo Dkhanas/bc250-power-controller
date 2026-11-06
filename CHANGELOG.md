@@ -3,26 +3,17 @@
 Firmware versions are the `v…` tags; each GitHub Release shows the section of the same name below.
 How to flash: [`firmware/README.md`](firmware/README.md#flash-it). Paired controllers and settings survive an update.
 
-## PCB v11 — 2026-11-06
-**One empty hole between each front connector**, so the button, TPM, J4003 and fan plugs don't touch. Not built or tested yet.
+## PCB v12 — 2026-11-06
+**Back to v9's ATX pin order, now confirmed with the real PSU cable, plus spaced-out front headers.**
+
+Fixed
+- PCB v10 and v11 had the ATX header mirrored (pin 1 at the back). On a built v8 board (everything except the ATX connector worked), 5 V standby measured on the 4th pin
+  from the back in the Pico-side row, exactly as v9 (and KiCad's official footprint) expect. v10 / v11 would put 12 V
+  on GND: never order them.
 
 Changed
-- Front row: J1 button, gap, J2 TPM, gap, J4 → J4003, gap, J3 fan 2.
+- Front row: J1 button, gap, J2 TPM, gap, J4 → J4003, gap, J3 fan 2 (from v11).
 - Bottom-right screw hole moved 1 mm towards the corner so an M3 screw head clears J3.
-- ATX pin order as v10 (pin 1 at the back). Do the purple-wire check in `pcb/README.md` before ordering; v9 is still in `pcb/gerbers/`.
-
-## PCB v10 — 2026-11-06
-**ATX header with pin 1 at the back (honeycomb wall) end.** Not built or tested yet.
-
-Changed
-- ATX pin order runs back → front (pins 1 / 13 at the back), latch still facing the wall. Board size, 5.5 mm row
-  spacing and peg holes are the same as v9.
-- Used ATX pins: 3 and 24 GND, 9 5VSB, 10 +12V, 16 PS_ON. Traces rerouted to match.
-
-Watch
-- v10 is the mirror of KiCad's official 5566-24A2 footprint (v9). Before ordering, plug the PSU cable into a bare
-  header held with the latch to the wall: purple in the Pico-side row, 4th from the FRONT → v10; 4th from the BACK → v9.
-  The wrong board puts 12 V on GND. Superseded by v11 (same pin order).
 
 ## v8 — 2026-11-06
 **Wi-Fi: control the console from your phone, set up in a minute.** Not tested on real hardware yet.
