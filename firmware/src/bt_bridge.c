@@ -4,6 +4,7 @@
 #include <string.h>
 #include <btstack.h>
 #include "btstack_tlv.h"
+#include "ble/le_device_db.h"
 #include <uni.h>
 
 #include "config.h"
@@ -39,6 +40,45 @@ static bt_slot_t bs[MAX_PADS];
 
 static volatile uint32_t h_ready_events;     // health check: a controller became ready
 static void bt_note_ready(void) { h_ready_events++; }
+
+// ------------------------------------------------------------------ pairing window (v7)
+static bool pair_on;
+static uint32_t pair_until;
+static bd_addr_t pair_addr;
+static bool pair_addr_set;
+static bd_addr_t ign_addr;      // rate-limit the "ignored" log line
+static uint32_t ign_logged_at;
+
+static uint32_t pw_now(void) { return to_ms_since_boot(get_absolute_time()); }
+
+void bt_pairing_start(void) {
+    pair_on = true;
+    pair_until = pw_now() + PAIRING_WINDOW_MS;
+    pair_addr_set = false;
+    logi("bc250: pairing window open for %lu s - put the new controller in pairing mode now\n",
+         (unsigned long)(PAIRING_WINDOW_MS / 1000));
+}
+
+bool bt_pairing_active(void) {
+    if (pair_on && (int32_t)(pw_now() - pair_until) >= 0) {
+        pair_on = false;
+        logi("bc250: pairing window closed (time up)\n");
+    }
+    return pair_on;
+}
+
+// Bonded Bluetooth LE controller (e.g. Xbox): it reconnects by advertising, so it comes through discovery
+static bool le_bonded(bd_addr_t addr) {
+    int max = le_device_db_max_count();
+    for (int i = 0; i < max; i++) {
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t a;
+        sm_key_t irk;
+        le_device_db_info(i, &type, a, irk);
+        if (type != BD_ADDR_TYPE_UNKNOWN && bd_addr_cmp(a, addr) == 0) return true;
+    }
+    return false;
+}
 static void kb_note_ready(bd_addr_t addr);
 
 static const uint8_t fetch_ds5[] = {0x09, 0x20, 0x05};   // pairing (MAC), firmware, calibration
@@ -244,20 +284,36 @@ static void p_init(int argc, const char** argv) {
 
 static void p_on_init_complete(void) {
     // Paired controllers are kept in flash; they reconnect when you press their PS/Xbox/Home button.
-    // Scanning stays on so a controller put in pairing mode gets paired automatically.
+    // Scanning stays on, but controllers in pairing mode are only taken while the pairing window
+    // is open (v7, hold the case button 2 s); bonded BLE pads need scanning to reconnect.
     uni_bt_list_keys_unsafe();
     uni_bt_start_scanning_and_autoconnect_unsafe();
 }
 
 static uni_error_t p_on_device_discovered(bd_addr_t addr, const char* name, uint16_t cod, uint8_t rssi) {
-    (void)addr;
-    ARG_UNUSED(name);
     ARG_UNUSED(rssi);
     uint16_t minor = cod & UNI_BT_COD_MINOR_MASK;
     if ((minor & UNI_BT_COD_MINOR_KEYBOARD) == UNI_BT_COD_MINOR_KEYBOARD ||
         (minor & UNI_BT_COD_MINOR_MICE) == UNI_BT_COD_MINOR_MICE)
         return UNI_ERROR_IGNORE_DEVICE;   // gamepads only
-    return UNI_ERROR_SUCCESS;
+
+    // v7: a controller found by scanning is in pairing mode (or is a bonded BLE pad reconnecting).
+    // Only take it while the pairing window is open, so pairing it with a phone/PC isn't hijacked.
+    if (bt_pairing_active()) {
+        bd_addr_copy(pair_addr, addr);
+        pair_addr_set = true;
+        logi("bc250: pairing window: connecting to %s '%s'\n", bd_addr_to_str(addr), name ? name : "");
+        return UNI_ERROR_SUCCESS;
+    }
+    if (le_bonded(addr)) return UNI_ERROR_SUCCESS;   // known BLE controller reconnecting
+    uint32_t t = pw_now();
+    if (bd_addr_cmp(addr, ign_addr) != 0 || t - ign_logged_at > 30000) {
+        bd_addr_copy(ign_addr, addr);
+        ign_logged_at = t;
+        logi("bc250: ignoring %s '%s' in pairing mode (pairing window closed: hold the case button 2 s to open it)\n",
+             bd_addr_to_str(addr), name ? name : "");
+    }
+    return UNI_ERROR_IGNORE_DEVICE;
 }
 
 static void p_on_device_connected(uni_hid_device_t* d) { ARG_UNUSED(d); }
@@ -315,6 +371,10 @@ static uni_error_t p_on_device_ready(uni_hid_device_t* d) {
     p->used = true;
     bt_ev_connected++;
     bt_note_ready();
+    if (pair_on && pair_addr_set && bd_addr_cmp(pair_addr, d->conn.btaddr) == 0) {
+        pair_on = false;
+        logi("bc250: new controller %s paired - pairing window closed\n", bd_addr_to_str(d->conn.btaddr));
+    }
     kb_note_ready(d->conn.btaddr);   // v6: back up this controller's pairing key
     logi("bc250: controller ready in slot %d (kind %d, pid %04x)\n", i, p->kind, p->pid);
     return UNI_ERROR_SUCCESS;

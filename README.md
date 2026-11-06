@@ -5,6 +5,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 - **Case button** short press: PSU on (the BC-250 auto-boots) / clean SteamOS shutdown (USB power key)
 - **Case button held 5 s:** force the PSU off
+- **Case button held 2 s:** pairing window, which accepts a new controller for 60 s. Outside it, controllers in
+  pairing mode are ignored, so you can still pair yours with a phone or PC
 - **Bluetooth controller** (DualSense, DS4, Switch Pro, Xbox, 8BitDo…): pressing PS / Xbox / Home wakes the board,
   and the controller is passed to the BC-250 over USB (as itself, or as an Xbox 360 pad)
 - **TPM pin 9** of the BC-250 goes low after shutdown -> PSU off after 5 s
@@ -27,15 +29,16 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 ## Quick start
 
-1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v6.uf2` onto the `RP2350` drive.
+1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v7.uf2` onto the `RP2350` drive.
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
-4. **Pair a controller:** put it in pairing mode. Pairing turns the BC-250 on (expected).
+4. **Pair a controller:** hold the case button 2 s and release (LED double-blinks), then put the controller in
+   pairing mode within 60 s. Pairing turns the BC-250 on if it was off (expected).
 
 ## Downsides and known limitations
 
 **Testing status**
-- **Firmware v6 compiles cleanly but hasn't been tested on real hardware yet** (v4 and v5 ran on the real board).
+- **Firmware v7 compiles cleanly but hasn't been tested on real hardware yet** (v4 and v5 ran on the real board).
   Its key guard works around a Bluepad32 behaviour: after one failed reconnect Bluepad32 deletes the controller's
   pairing key, which made controllers "search" forever until re-paired. The Bluetooth repair from v5 stays for
   real radio hangs. The log (`sudo cat /dev/ttyACM0`) shows which one happened.
@@ -56,6 +59,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
   lightbar and adaptive triggers.
 - **No audio:** the DualSense / DS4 headphone jack, speaker and mic aren't passed through.
 - **Up to 4 controllers. Only Bluetooth ones work**: no wired controllers through the Pico, and no non-Bluetooth Xbox One pads.
+- **New controllers only pair while the pairing window is open** (case button held 2 s). Bluetooth LE controllers
+  already bonded to the Pico (e.g. Xbox) are still taken when put in pairing mode, because they reconnect the same way.
 - **Pairing a controller turns the BC-250 on.** For 20 s after a shutdown, controllers that reconnect are ignored,
   so a quick press of PS right after power-off does nothing.
 
@@ -88,7 +93,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 | | Version | Date |
 |---|---|---|
-| Firmware | v6 – pairing key guard (restores keys Bluepad32 deletes), Bluetooth repair while running, event log over USB serial | 2026-10-20 |
+| Firmware | v7 – pairing window (hold button 2 s), pairing key guard, Bluetooth repair while running, event log over USB serial | 2026-11-06 |
 | PCB | v9 – corrected ATX header (5.5 mm rows, pin 1 at the front, peg holes) | 2026-10-19 |
 | Perfboard map | v16 (ATX header superseded by PCB v9) | 2026-10-18 |
 

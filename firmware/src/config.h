@@ -11,6 +11,12 @@
 // ---------------------------------------------------------------- button
 #define BUTTON_DEBOUNCE_MS      30
 #define BUTTON_LONG_PRESS_MS    5000    // hold this long = force PSU off
+// v7: pairing window. Hold the case button at least this long and release (before the 5 s force-off)
+// -> new controllers are accepted for PAIRING_WINDOW_MS. Outside it, controllers in pairing mode are ignored.
+#define PAIR_HOLD_MS            2000
+#define PAIR_HOLD_MAX_MS        4500    // released after this (with the PSU on) = nothing; 5 s = force off
+#define PAIRING_WINDOW_MS       60000
+#define LED_BLINK_PAIRING_MS    100     // pairing window: double blink
 
 // ---------------------------------------------------------------- power sequencing
 #define TPM_DEBOUNCE_MS         50

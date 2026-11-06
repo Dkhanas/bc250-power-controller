@@ -71,14 +71,14 @@ static bool was_connected;
 static uint32_t pos;   // next byte of the ring to send
 
 static void help(void) {
-    printf("bc250: log commands: s = status, r = restart Bluetooth now (test), c = clear log, h = help\n");
+    printf("bc250: log commands: s = status, p = open pairing window, r = restart Bluetooth now (test), c = clear log, h = help\n");
 }
 
 void log_task(void) {
     bool conn = tud_cdc_connected();
     if (conn && !was_connected) {
         pos = ring.total > LOG_SIZE ? ring.total - LOG_SIZE : 0;   // send the whole ring first
-        printf("bc250: log port opened (firmware v6, %lu starts since power-on)\n", (unsigned long)ring.boots);
+        printf("bc250: log port opened (firmware v7, %lu starts since power-on)\n", (unsigned long)ring.boots);
         help();
     }
     was_connected = conn;
@@ -90,6 +90,9 @@ void log_task(void) {
         switch (c) {
             case 's': case 'S':
                 if (status_fn) status_fn();
+                break;
+            case 'p': case 'P':
+                bt_pairing_start();
                 break;
             case 'r': case 'R':
                 printf("bc250: Bluetooth restart requested\n");

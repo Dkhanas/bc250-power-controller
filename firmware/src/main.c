@@ -11,6 +11,8 @@
 //  v5: Bluetooth trouble is first fixed by restarting only Bluetooth (board keeps running);
 //      event log readable on the BC-250 over USB serial (/dev/ttyACM0) while no controller is connected
 //  v6: pairing key guard - restores a controller's key when Bluepad32 deletes it after a failed reconnect
+//  v7: pairing window - new controllers only while open (hold the case button 2 s, release); otherwise
+//      controllers in pairing mode are ignored, so pairing one with a phone/PC isn't taken over
 
 #include <stdio.h>
 
@@ -71,7 +73,7 @@ static uint32_t btn_down_at;
 static bool btn_long_fired;
 static uint32_t tpm_low_since;
 
-typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG } btn_event_t;
+typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG, BTN_PAIR } btn_event_t;
 
 static btn_event_t poll_button(uint32_t t) {
     bool pressed = !gpio_get(PIN_BUTTON);
@@ -80,6 +82,12 @@ static btn_event_t poll_button(uint32_t t) {
             btn_down_at = t;
             btn_long_fired = false;
         } else if (!btn_long_fired) {
+            uint32_t held = t - btn_down_at;
+            if (held >= PAIR_HOLD_MS) {
+                // 2 s+ hold: pairing window (with the PSU on, only up to PAIR_HOLD_MAX_MS; 5 s = force off)
+                if (state == ST_OFF || held < PAIR_HOLD_MAX_MS) return BTN_PAIR;
+                return BTN_NONE;
+            }
             return BTN_SHORT;
         }
     }
@@ -163,8 +171,19 @@ static void led_task(uint32_t t) {
         level = ((t / LED_BLINK_STARTING_MS) & 1) ? 0 : LED_BRIGHTNESS_ON;
     else
         level = LED_BRIGHTNESS_ON;
-    // Hold feedback: while the button is held with the PSU on, LED goes dark after 1 s
-    if (state != ST_OFF && btn_db.stable && !btn_long_fired && t - btn_down_at >= 1000) level = 0;
+    // Pairing window: double blink (two short flashes every second)
+    if (bt_pairing_active()) {
+        uint32_t ph = t % 1000;
+        level = (ph < LED_BLINK_PAIRING_MS || (ph >= 2 * LED_BLINK_PAIRING_MS && ph < 3 * LED_BLINK_PAIRING_MS))
+                    ? LED_BRIGHTNESS_ON : 0;
+    }
+    // Hold feedback: from 2 s the LED double-blinks fast ("release now = pairing"); with the PSU on,
+    // past PAIR_HOLD_MAX_MS it goes dark ("keep holding = force off")
+    if (btn_db.stable && !btn_long_fired) {
+        uint32_t held = t - btn_down_at;
+        if (state != ST_OFF && held >= PAIR_HOLD_MAX_MS) level = 0;
+        else if (held >= PAIR_HOLD_MS) level = ((t / 60) & 1) ? LED_BRIGHTNESS_ON : 0;
+    }
     pwm_set_gpio_level(PIN_LED, level);
 }
 
@@ -318,6 +337,11 @@ static void app_tick(uint32_t t) {
         power_off("button held");
         return;
     }
+    // Hold 2 s and release (or keep holding while off): open the pairing window
+    if (btn == BTN_PAIR || (btn == BTN_LONG && state == ST_OFF)) {
+        if (cyw43_ok) bt_pairing_start();
+        return;
+    }
 
     // TPM low long enough while the board was up -> it has shut down
     if (state == ST_RUNNING || state == ST_STOPPING) {
@@ -430,7 +454,7 @@ int main(void) {
     stdio_init_all();   // UART0 on GP0/GP1 (debug log only, nothing needs to be connected)
     log_init(watchdog_caused_reboot());   // RAM log, kept across self-restarts
     log_set_status_fn(print_status);
-    printf("\nbc250: power controller starting (firmware v6)\n");
+    printf("\nbc250: power controller starting (firmware v7)\n");
     if (watchdog_caused_reboot()) {
         uint32_t r = watchdog_hw->scratch[0];
         if ((r & 0xFFFF0000u) == RESTART_MAGIC && (r & 0xFFFF) <= RS_IDLE)

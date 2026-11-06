@@ -2,7 +2,7 @@
 
 ## Flash it
 1. Hold BOOTSEL on the Pico, plug it into a PC → it shows up as a USB drive `RP2350`.
-2. Copy `release/bc250_power_v6.uf2` onto it. The Pico reboots and runs the firmware.
+2. Copy `release/bc250_power_v7.uf2` onto it. The Pico reboots and runs the firmware.
 
 ## What it does
 | Input | State | Result |
@@ -39,7 +39,7 @@ Limits:
 - Short-pressing the case button while PlayStation/Switch identities are active: the Pico re-plugs as the power-key device (~2 s), then sends the key. The controllers disappear from SteamOS at that moment - it's shutting down anyway. If the shutdown doesn't happen within 90 s, they come back.
 
 ## First-time pairing
-Put the controller in pairing mode (DualSense: Create + PS until it flashes; Xbox: hold the pair button). The Pico pairs it automatically and stores the key in flash. **Pairing a controller counts as "controller connected" and turns the BC-250 on** — that's expected.
+**v7:** first hold the case button 2 s and release (LED double-blinks), then put the controller in pairing mode (DualSense: Create + PS until it flashes; Xbox: hold the pair button) within 60 s. The Pico pairs it and stores the key in flash. **Pairing a controller counts as "controller connected" and turns the BC-250 on** — that's expected.
 After that, pressing the PS/Xbox/Home button wakes the BC-250.
 
 When the BC-250 shuts down, the Pico disconnects the controllers so they go to sleep. For 20 s after power-off, reconnecting controllers are dropped instead of waking the board (stops an instant re-power).
@@ -150,3 +150,19 @@ After that the controller keeps reconnecting with its key, the Pico refuses, and
 - A controller you **re-pair** gets its new key backed up automatically. Controllers paired before v6 get a
   backup the first time they connect with v6.
 - Setting: `KEY_GUARD_CHECK_MS` in `src/config.h`.
+
+## v7 changes (6 Nov 2026) - pairing window
+Before v7 the Pico paired with **any** controller put in pairing mode nearby. So pairing your controller with a
+phone or PC failed: the Pico took it first, and also switched the BC-250 on.
+- **Controllers in pairing mode are now ignored**, unless the pairing window is open.
+- **Open the pairing window:** hold the case button **2 s** and release. The LED double-blinks fast while you
+  hold, which means "release now". Then the LED **double-blinks for up to 60 s** (`PAIRING_WINDOW_MS`).
+  Put the new controller in pairing mode within that time. The window closes as soon as it's paired.
+  It works with the console on or off. Pairing while off still switches the console on.
+- **Hold 5 s** with the console on still forces it off. Past 4.5 s the LED goes dark ("keep holding = force off"),
+  and releasing between 4.5 and 5 s does nothing.
+- **Already-paired controllers reconnect as before** with PS / Xbox / Home. A reconnect doesn't use pairing mode.
+  Bluetooth LE controllers (e.g. Xbox) reconnect by advertising, so they're let in when already bonded to the Pico.
+- Log: `ignoring XX:XX:... in pairing mode (pairing window closed ...)`, `pairing window open ...`,
+  `new controller ... paired`. The log port command `p` also opens the window.
+- Settings: `PAIR_HOLD_MS`, `PAIR_HOLD_MAX_MS`, `PAIRING_WINDOW_MS`, `LED_BLINK_PAIRING_MS` in `src/config.h`.
