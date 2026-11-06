@@ -18,16 +18,16 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 - **Button LED:** slow blink booting, solid running, fast blink shutting down
 - **Second fan** powered from the PSU's 12 V, speed controlled by the BC-250 (J4003)
 
-| Printed board (PCB v9) | Test board (perfboard) |
+| Printed board (PCB v11) | Test board (perfboard) |
 |---|---|
-| ![PCB v9](pcb/images/top.png) | ![Perfboard](perfboard/images/top-view.png) |
+| ![PCB v11](pcb/images/top.png) | ![Perfboard](perfboard/images/top-view.png) |
 
 ## Repository
 
 | Folder | What |
 |---|---|
 | [`firmware/`](firmware/) | Pico 2 W firmware (C, Pico SDK 2.3.1 + Bluepad32). Ready-to-flash file in [`firmware/release/`](firmware/release/) |
-| [`pcb/`](pcb/) | Printed board, v9: KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
+| [`pcb/`](pcb/) | Printed board, v11 (and v9 Gerbers): KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
 | [`perfboard/`](perfboard/) | Test board on a 70×90 mm perfboard: hole-by-hole map |
 | [`.github/workflows/`](.github/workflows/) | Automatic firmware build on GitHub; a version tag (`v8`) publishes a Release with both `.uf2` files |
 | [`docs/`](docs/) | Build plan: wiring to the BC-250, Pico pins, SteamOS settings, mounting |
@@ -65,9 +65,10 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 - **Bluetooth repair takes a moment:** when Bluetooth is stuck, the Pico notices within about 30 s and restarts
   only Bluetooth, which takes a few more seconds. Until then, PS doesn't reconnect.
 - **The log port only exists while no controller is connected**, so controller identities stay exact.
-- **The PCB v9 was checked with KiCad DRC and against the official connector footprint, not on a built board.**
+- **PCB v9 and v11 were checked with KiCad DRC, not on a built board. They differ only in the ATX pin order:** v9 follows the official
+  connector footprint (pin 1 at the front), v11 has pin 1 at the back. Do the purple-wire check in [`pcb/README.md`](pcb/README.md) before ordering.
   Check the first board with a multimeter before connecting the PSU (see [`pcb/README.md`](pcb/README.md)).
-- **The perfboard map (v16) has the ATX header mirrored.** Wire it by wire colour, not by the hole numbers.
+- **The perfboard map (v16) has the ATX pin order of PCB v10 / v11 (pin 1 at the back).** Wire it by wire colour, not by the hole numbers.
 
 **Controllers**
 - **Whenever a controller joins or leaves, every controller drops for about 0.5 s.** The Pico re-plugs itself on USB
@@ -102,8 +103,9 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 ## ⚠️ Safety notes
 
-- **ATX header orientation:** with the latch facing the wall, **pin 1 is at the FRONT end**, and the two pin rows are **5.5 mm apart**.
-  PCB versions v1–v8 and perfboard map v16 had this mirrored (12 V on GND). Only use **PCB v9 or later**.
+- **ATX header orientation:** the two pin rows are **5.5 mm apart** (PCB v1–v8 used 4.2 mm: never use them).
+  KiCad's official footprint puts pin 1 at the FRONT end with the latch facing the wall (PCB v9); PCB v10 / v11 put it at the BACK.
+  Only one matches your connector, and the wrong one puts 12 V on GND: check with the PSU cable first (see [`pcb/README.md`](pcb/README.md)).
 - **Pico VBUS (pin 40) stays unconnected** on the board. The USB cable's 5 V (red wire) can leak standby power into a
   switched-off BC-250; firmware v4 and later handle a normal cable (`USE_VBUS_SENSE 1`).
 
@@ -112,8 +114,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 | | Version | Date |
 |---|---|---|
 | Firmware | v8 – Wi-Fi phone page (setup from the phone, controller list, pairing, forget) + Home Assistant, low-battery warning, pairing window, key guard, Bluetooth repair, event log | 2026-11-06 |
-| PCB | v9 – corrected ATX header (5.5 mm rows, pin 1 at the front, peg holes) | 2026-10-19 |
-| Perfboard map | v16 (ATX header superseded by PCB v9) | 2026-10-18 |
+| PCB | v11 – gaps between the front headers; ATX pin 1 at the back (v9: pin 1 at the front); 5.5 mm rows, peg holes | 2026-11-06 |
+| Perfboard map | v16 (ATX pin order as PCB v10 / v11; wire it by wire colour) | 2026-10-18 |
 
 **Building:** `bash firmware/build.sh` (library versions pinned in `firmware/deps.env`), or download the `.uf2` from
 GitHub (Actions / Releases).
