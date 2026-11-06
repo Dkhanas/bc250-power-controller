@@ -1,8 +1,11 @@
 # BC-250 power controller firmware (Pico 2 W / Pico 2 WH)
 
 ## Flash it
-1. Hold BOOTSEL on the Pico, plug it into a PC → it shows up as a USB drive `RP2350`.
-2. Copy `release/bc250_power_v7.uf2` onto it. The Pico reboots and runs the firmware.
+1. **Take the Pico out of its sockets** (or unplug the PSU from the wall for 30 s). The Pico runs on standby
+   power and only checks BOOTSEL at power-up.
+2. Hold BOOTSEL, plug the Pico into a PC → it shows up as a USB drive `RP2350`. Release BOOTSEL.
+3. Copy `release/bc250_power_v7.uf2` onto it. The drive disappears; the Pico runs the new firmware.
+4. Put it back the same way round (USB toward the front). Paired controllers stay paired.
 
 ## What it does
 | Input | State | Result |
@@ -10,16 +13,28 @@
 | Button short press | off | PSU on (GP15 high) → board boots (AUTO_PWRON) |
 | Button short press | running | USB **Power** key sent → SteamOS shuts down |
 | Button short press | stopping | Power key sent again |
-| Button held 5 s | any (PSU on) | PSU off immediately (LED goes dark after 1 s of holding) |
+| Button held 2 s, released | any | **Pairing window** for 60 s: a new controller can pair (LED double-blinks) |
+| Button held 5 s | any (PSU on) | PSU off immediately (LED goes dark after 4.5 s of holding) |
 | TPM pin 9 low ≥ 5 s | running/stopping | PSU off, Bluetooth controllers disconnected |
-| BT controller connects or PS/Xbox/Home pressed | off | PSU on |
+| Paired BT controller connects or PS/Xbox/Home pressed | off | PSU on |
+| Controller in pairing mode, pairing window closed | any | Ignored, so it can be paired with a phone/PC |
 | BT controller button | BC-250 USB suspended | USB remote wake-up |
 | PSU on but TPM never goes high | starting | PSU off after 180 s |
 | SteamOS ignores the key for 90 s | stopping | back to running (press again or hold) |
 
 Short press while the board is still booting is ignored on purpose (hold 5 s to abort).
 
-**Button LED:** off while off · slow blink (1 Hz) booting · solid running · fast blink shutting down / TPM dropped.
+**Button LED:** off while off · slow blink (1 Hz) booting · solid running · fast blink shutting down / TPM dropped ·
+double blink = pairing window open. While holding the button: fast flicker from 2 s ("release = pairing"),
+dark from 4.5 s ("keep holding = force off", PSU on only).
+
+**Self-repair (v4-v6):**
+- **Bluetooth health check** every 10 s. If the radio stops answering or stops accepting controllers, only
+  Bluetooth is restarted (the board keeps running). If that fails 3 times in 30 min, the Pico restarts itself
+  after the next power-off.
+- **Pairing key guard:** Bluepad32 deletes a controller's pairing key after one failed reconnect; the Pico keeps a
+  backup of every key in flash and puts it back.
+- **Safety restart** every 6 h in standby with nothing connected; hardware watchdog while the PSU is off.
 
 **Controllers - up to 4 at once, the BC-250 sees the real controllers:**
 | You connect (Bluetooth) | BC-250 sees (USB) | What works |
@@ -38,8 +53,15 @@ Limits:
 - With no controller connected the Pico shows up as a small "BC-250 Power Controller" device (power key only).
 - Short-pressing the case button while PlayStation/Switch identities are active: the Pico re-plugs as the power-key device (~2 s), then sends the key. The controllers disappear from SteamOS at that moment - it's shutting down anyway. If the shutdown doesn't happen within 90 s, they come back.
 
-## First-time pairing
-**v7:** first hold the case button 2 s and release (LED double-blinks), then put the controller in pairing mode (DualSense: Create + PS until it flashes; Xbox: hold the pair button) within 60 s. The Pico pairs it and stores the key in flash. **Pairing a controller counts as "controller connected" and turns the BC-250 on** — that's expected.
+## Pairing a controller
+1. Hold the case button **2 s** and release when the LED flickers fast. The LED then double-blinks: the
+   pairing window is open for 60 s.
+2. Put the controller in pairing mode (DualSense: Create + PS until it flashes; DS4: Share + PS;
+   Switch Pro: sync button; Xbox: hold the pair button).
+3. The Pico pairs it, stores the key in flash and closes the window. If the console was off, it switches on.
+
+Outside the window, controllers in pairing mode are ignored, so you can pair yours with a phone or PC without the
+Pico taking it. Exception: Bluetooth LE controllers already bonded to the Pico (e.g. Xbox).
 After that, pressing the PS/Xbox/Home button wakes the BC-250.
 
 When the BC-250 shuts down, the Pico disconnects the controllers so they go to sleep. For 20 s after power-off, reconnecting controllers are dropped instead of waking the board (stops an instant re-power).
@@ -51,7 +73,14 @@ Your plan already sets `HandlePowerKey=poweroff`. To confirm the key arrives: `s
 All timings, pins, LED brightness and the controller limit are in `src/config.h`. Defaults:
 `MAX_PADS 4` (also `CONFIG_BLUEPAD32_MAX_DEVICES` in `sdkconfig.h`), `LED_BRIGHTNESS_STANDBY 0` (set e.g. 8 for a faint glow when off), `BOOT_TIMEOUT_MS 180000` (0 = disable).
 
-Debug log: UART0 TX on GP0, 115200 baud (optional, nothing has to be connected).
+## Log (troubleshooting)
+Everything the firmware does goes into a 16 KB RAM log that survives a Pico self-restart (cleared when the PSU is
+unplugged). **Don't unplug the PSU before reading it** when something went wrong.
+- **On the BC-250** (while no controller is connected), in Konsole: `sudo cat /dev/ttyACM0` prints the log, then
+  new lines live (Ctrl+C to stop). Commands, from a second Konsole: `echo s | sudo tee /dev/ttyACM0` (status line),
+  `p` (open pairing window), `r` (restart Bluetooth, for testing), `c` (clear log), `h` (help).
+- **UART:** GP0 (pin 1) TX, 115200 baud, with a 3.3 V USB-serial adapter (optional).
+- A status line is logged every 5 min: state, PSU, USB, Bluetooth health, restarts, restored keys, connected pads.
 
 ## Rebuild (Linux)
 ```

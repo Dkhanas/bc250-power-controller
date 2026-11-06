@@ -3,7 +3,10 @@
 ## What it does
 - Case button short press: PSU on (board auto-boots) / clean shutdown (USB power key)
 - Case button hold 5 s: force PSU off
-- Bluetooth controller wakes the board and is passed to the BC-250 over USB
+- Case button hold 2 s: pairing window (60 s) for a new controller; otherwise controllers in pairing mode are ignored
+- Paired Bluetooth controller wakes the board and is passed to the BC-250 over USB
+- Bluetooth self-repair (health check, Bluetooth-only restart, pairing key guard) and an event log readable on the
+  BC-250 (`sudo cat /dev/ttyACM0`), see [`../firmware/README.md`](../firmware/README.md)
 - After SteamOS shutdown, TPM pin 9 drops -> PSU off after 5 s
 - Button LED driven by the Pico (on while running, blinks while starting / stopping)
 - Second fan powered from PSU 12V, speed controlled by BC-250 J4003
@@ -27,7 +30,7 @@ Case stays in its normal orientation. The board lies on the floor, button above 
 | GP2 | 4 | R3 220 Ω <- BC-250 TPM header pin 9 (internal pull-down, high = running) |
 | VSYS | 39 | D1 1N5819 <- ATX 5VSB (pin 9) |
 | GND | 3 / 18 / 23 | ATX GND |
-| GP0 | 1 | Optional debug log, UART TX 115200 baud (3.3 V adapter) |
+| GP0 | 1 | Optional debug log, UART TX 115200 baud (3.3 V adapter); the same log is on USB serial too |
 
 Do **not** connect RUN, VREF, 3V3, 3V3_EN, **VBUS (pin 40)**: 5VSB on VBUS back-feeds the BC-250 through the USB cable.
 
@@ -40,6 +43,10 @@ with the PSU on mains, pad 9 must read +5 V to GND.
 ## Cables
 - Micro-USB -> USB-A data cable (~50 cm) from the Pico to the BC-250 (controllers + power key).
 - Dupont wires: button (3), TPM pin 9 (1), J4003 tach/PWM (2), second fan (4-pin).
+
+## Flashing the Pico in the case
+The Pico is always powered from 5VSB, so BOOTSEL is ignored while it runs. Take it out of its sockets
+(or unplug the PSU from the wall for 30 s), hold BOOTSEL, plug it into a PC and copy the `.uf2`.
 
 ## Mounting
 4 corner M3 screws, board flat on the plastic floor, washers if it rocks.
