@@ -295,7 +295,7 @@ static void p_init(int argc, const char** argv) {
 static void p_on_init_complete(void) {
     // Paired controllers are kept in flash; they reconnect when you press their PS/Xbox/Home button.
     // Scanning stays on, but controllers in pairing mode are only taken while the pairing window
-    // is open (v7, hold the case button 2 s); bonded BLE pads need scanning to reconnect.
+    // is open (v7; v9: double-click the case button); bonded BLE pads need scanning to reconnect.
     uni_bt_list_keys_unsafe();
     uni_bt_start_scanning_and_autoconnect_unsafe();
 }
@@ -320,7 +320,7 @@ static uni_error_t p_on_device_discovered(bd_addr_t addr, const char* name, uint
     if (bd_addr_cmp(addr, ign_addr) != 0 || t - ign_logged_at > 30000) {
         bd_addr_copy(ign_addr, addr);
         ign_logged_at = t;
-        logi("bc250: ignoring %s '%s' in pairing mode (pairing window closed: hold the case button 2 s to open it)\n",
+        logi("bc250: ignoring %s '%s' in pairing mode (pairing window closed: double-click the case button to open it)\n",
              bd_addr_to_str(addr), name ? name : "");
     }
     return UNI_ERROR_IGNORE_DEVICE;
@@ -742,6 +742,8 @@ static void health_reset_counters(uint32_t t) {
 }
 
 bool bt_restarting(void) { return rec != REC_IDLE; }
+
+bool bt_stack_ready(void) { return uni_bt_setup_is_ready() && hci_get_state() == HCI_STATE_WORKING; }
 
 static void bt_restart(uint32_t t, const char* why) {
     if (rec != REC_IDLE || bt_gave_up) return;

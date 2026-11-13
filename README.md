@@ -29,21 +29,23 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 | [`firmware/`](firmware/) | Pico 2 W firmware (C, Pico SDK 2.3.1 + Bluepad32). Ready-to-flash file in [`firmware/release/`](firmware/release/) |
 | [`pcb/`](pcb/) | Printed board, v12: KiCad project, Gerbers for JLCPCB / PCBWay / Aisler, notes |
 | [`perfboard/`](perfboard/) | Test board on a 70×90 mm perfboard: hole-by-hole map |
-| [`.github/workflows/`](.github/workflows/) | Automatic firmware build on GitHub; a version tag (`v8`) publishes a Release with both `.uf2` files |
+| [`.github/workflows/`](.github/workflows/) | Automatic firmware build on GitHub; a version tag (`v9`) publishes a Release with the `.uf2` files |
 | [`docs/`](docs/) | Build plan (wiring to the BC-250, SteamOS settings, mounting) and [pin drawings](docs/pinout.md) of every connector |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes: what's new, fixed and known issues in each firmware and PCB version |
 | [`bom.csv`](bom.csv) | Parts list for both boards (opens in Excel; GitHub shows it as a table) |
 
 ## Quick start
 
-1. **Flash:** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v8.uf2` onto the `RP2350` drive
-   (or `bc250_power_v8_ha.uf2` if you use Home Assistant).
+1. **Flash (once, over USB):** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v9.uf2`
+   onto the `RP2350` drive (or `bc250_power_v9_ha.uf2` if you use Home Assistant) and leave it plugged in for 10 s.
+   Later versions: from the phone page, Settings → Firmware (see [`firmware/README.md`](firmware/README.md#flash-it)).
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
    Pin drawings of every connector (BC-250 J4003 / TPMS1, ATX, board headers, Pico): [`docs/pinout.md`](docs/pinout.md).
-4. **Pair a controller:** hold the case button 2 s and release (LED double-blinks), then put the controller in
+4. **Pair a controller:** double-click the case button (LED double-blinks), then put the controller in
    pairing mode within 60 s. Pairing turns the BC-250 on if it was off (expected).
-5. **Optional Wi-Fi:** console off, hold the case button **8 s** (LED stays lit), release. On your phone tap the
+5. **Optional Wi-Fi:** on for 30 min after the Pico gets power (or: console off, hold the case button **8 s**, LED stays
+   lit, release). On your phone tap the
    Wi-Fi **`BC250-setup`**; the setup page opens by itself. Pick your network, type its password, done. Then open
    `http://bc250.local` and *Add to Home Screen*. Wi-Fi switches itself off when unused (Settings → "Wi-Fi is on").
 

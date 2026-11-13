@@ -22,6 +22,7 @@ void bt_native_task(uint32_t now_ms);  // feature-report fetching + USB -> contr
 bool bt_health_task(uint32_t now_ms);
 void bt_health_status(uint32_t now_ms, char* buf, int len);   // one-line summary for the log
 bool bt_restarting(void);      // Bluetooth restart in progress (don't touch the CYW43 chip)
+bool bt_stack_ready(void);     // Bluetooth stack up and working (v9: a new firmware is kept only then)
 
 // v7: pairing window. Outside it, controllers in pairing mode are ignored (bonded controllers
 // still reconnect). Closes after PAIRING_WINDOW_MS or as soon as a new controller is paired.

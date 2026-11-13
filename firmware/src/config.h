@@ -11,10 +11,13 @@
 // ---------------------------------------------------------------- button
 #define BUTTON_DEBOUNCE_MS      30
 #define BUTTON_LONG_PRESS_MS    5000    // hold this long = force PSU off
-// v7: pairing window. Hold the case button at least this long and release (before the 5 s force-off)
-// -> new controllers are accepted for PAIRING_WINDOW_MS. Outside it, controllers in pairing mode are ignored.
-#define PAIR_HOLD_MS            2000
-#define PAIR_HOLD_MAX_MS        4500    // released after this (with the PSU on) = nothing; 5 s = force off
+// v7: pairing window - new controllers are accepted for PAIRING_WINDOW_MS, otherwise controllers in pairing
+// mode are ignored. v9: opened by a DOUBLE CLICK of the case button (was: hold 2 s).
+// A click = press shorter than CLICK_MAX_MS. A single click waits DOUBLE_CLICK_MS for a second one before it acts
+// (power on / shut down); a longer press (up to the force-off warning) acts at once on release.
+#define CLICK_MAX_MS            600
+#define DOUBLE_CLICK_MS         400
+#define FORCE_OFF_WARN_MS       4500    // PSU on: LED goes dark; released after this = nothing; 5 s = force off
 #define PAIRING_WINDOW_MS       60000
 #define LED_BLINK_PAIRING_MS    100     // pairing window: double blink
 
@@ -106,6 +109,16 @@
 #define SETUP_HOTSPOT_PASSWORD  ""          // "" = open (easiest); or at least 8 characters for WPA2
 #define WIFI_FAIL_TO_SETUP_MS   (5u * 60u * 1000u)
 #define SETUP_HOTSPOT_MS        (10u * 60u * 1000u)
+// Setup page "Connect" (v9): the Pico first joins the network with the hotspot still on, for up to WIFI_TEST_MS.
+// Only if that works is it saved; the hotspot then stays until the page has shown the result (max WIFI_TEST_SHOW_MS).
+#define WIFI_TEST_MS            (30u * 1000u)
+#define WIFI_TEST_SHOW_MS       (90u * 1000u)
+
+// Firmware update from the web page (v9). A new firmware starts "on trial": it is kept once it has run for
+// OTA_BUY_AFTER_MS with Bluetooth working. If Bluetooth isn't up by OTA_BUY_DEADLINE_MS (or it hangs), the
+// Pico goes back to the previous firmware by itself.
+#define OTA_BUY_AFTER_MS        10000
+#define OTA_BUY_DEADLINE_MS     60000
 
 // ---------------------------------------------------------------- when Wi-Fi runs (v8, Settings page)
 // Mode "only when turned on" (default): hold the case button WIFI_HOLD_MS with the console off and release

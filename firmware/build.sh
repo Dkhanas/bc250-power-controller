@@ -36,3 +36,4 @@ ninja -C "$here/build"
 echo
 echo "Firmware: $here/build/bc250_power.uf2      (without Home Assistant)"
 echo "          $here/build/bc250_power_ha.uf2   (with Home Assistant)"
+echo "          $here/build/bc250_partition_table.uf2   (fallback only: the firmware sets up its slots itself)"

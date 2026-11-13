@@ -19,14 +19,22 @@
     <div id="pwbox" style="display:none">
       <label for="pass">Password</label><input id="pass" type="password" autocomplete="off">
     </div>
+    <div id="err" class="bad" style="display:none;margin-top:12px"></div>
     <button style="margin-top:14px" id="go" onclick="connect()" disabled>Connect</button>
+    <div id="anyway" class="foot" style="display:none"><a href="#" onclick="saveAnyway();return false">Save anyway (connect later)</a></div>
+  </div>
+  <div class="card" id="checking" style="display:none">
+    <div style="font-size:18px;font-weight:600">Checking <span id="cname"></span>…</div>
+    <p class="mut">The BC-250 is trying your network. This setup Wi-Fi stays on until it knows. <span id="cleft"></span></p>
+    <p class="mut" id="lost" style="display:none">Your phone may have dropped off <b>BC250-setup</b> for a moment
+       (the radio switched to your network's channel). If this doesn't continue by itself, reconnect the phone to
+       <b>BC250-setup</b> in its Wi-Fi settings.</p>
   </div>
   <div class="card" id="done" style="display:none">
-    <div class="ok" style="font-size:18px">Saved ✓</div>
-    <p>The BC-250 is joining <b id="joined"></b>. This setup Wi-Fi switches off now.</p>
-    <p>Put your phone back on your normal Wi-Fi and open <b>http://bc250.local</b>.<br>
+    <div class="ok" style="font-size:18px">Connected ✓</div>
+    <p id="donemsg"></p>
+    <p>Put your phone back on your normal Wi-Fi and open <b>http://bc250.local</b><span id="addr"></span>.<br>
        Then use <b>Add to Home Screen</b> in your browser's menu to get a BC-250 icon.</p>
-    <p class="mut">If it doesn't connect (wrong password), this setup Wi-Fi comes back after 5 minutes.</p>
   </div>
 </main>
 <script src="/app.js"></script>
@@ -69,21 +77,70 @@ async function load() {
   } catch (e) { $('nets').textContent = 'Could not load the network list. Use "Other network…".'; }
 }
 
+function show(id) { ['form', 'checking', 'done'].forEach(x => $(x).style.display = x === id ? 'block' : 'none'); }
+function picked() { return chosen === '' ? $('ssid').value.trim() : chosen; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Connect = the BC-250 tries the network first (setup Wi-Fi stays on); it's saved only if that works
 async function connect() {
-  const ssid = chosen === '' ? $('ssid').value.trim() : chosen;
+  const ssid = picked();
   if (!ssid) { $('ssid').focus(); return; }
+  $('err').style.display = 'none';
+  $('anyway').style.display = 'none';
   $('go').disabled = true;
-  $('go').textContent = 'Saving…';
+  let r, j;
+  try {
+    r = await post('/api/wifi_test', { ssid: ssid, pass: $('pass').value });
+    j = r && r.ok ? await r.json() : null;
+  } catch (e) {}
+  if (!j) { fail('Could not start the check' + (r ? ' (' + r.status + ')' : '') + '. Try again.'); return; }
+  $('cname').textContent = ssid;
+  $('lost').style.display = 'none';
+  show('checking');
+  let lastOk = Date.now();
+  for (;;) {
+    await sleep(1000);
+    let s = null;
+    try { s = await (await fetch('/api/wifi_test', { cache: 'no-store' })).json(); } catch (e) {}
+    if (!s || s.seq !== j.seq) {
+      if (Date.now() - lastOk > 6000) $('lost').style.display = 'block';
+      continue;
+    }
+    lastOk = Date.now();
+    $('lost').style.display = 'none';
+    if (s.state === 'checking') { $('cleft').textContent = s.left > 0 ? '(' + s.left + ' s)' : ''; continue; }
+    if (s.state === 'ok') {
+      $('donemsg').textContent = 'The BC-250 joined ' + ssid + ' and saved it. This setup Wi-Fi switches off in a few seconds.';
+      $('addr').textContent = s.msg ? ' (or http://' + s.msg + ')' : '';
+      show('done');
+    } else {
+      fail('Could not connect to ' + ssid + ': ' + (s.msg || 'unknown error') + '. Nothing was saved - check the password and try again.');
+    }
+    return;
+  }
+}
+
+function fail(msg) {
+  show('form');
+  $('err').textContent = msg;
+  $('err').style.display = 'block';
+  $('anyway').style.display = 'block';
+  $('go').disabled = false;
+  if ($('pwbox').style.display !== 'none') $('pass').select();
+}
+
+// Old behaviour: save without the check (e.g. the router is off right now)
+async function saveAnyway() {
+  const ssid = picked();
+  if (!ssid || !confirm('Save ' + ssid + ' without a working connection? This setup Wi-Fi then switches off; if the network ' +
+                        "can't be reached, it comes back after 5 minutes.")) return;
   const r = await post('/api/settings', { ssid: ssid, pass: $('pass').value });
   if (r && r.ok) {
-    $('form').style.display = 'none';
-    $('joined').textContent = ssid;
-    $('done').style.display = 'block';
-  } else {
-    $('go').disabled = false;
-    $('go').textContent = 'Connect';
-    alert('Saving failed' + (r ? ' (' + r.status + ')' : ''));
-  }
+    $('donemsg').textContent = 'Saved ' + ssid + ' (not checked). This setup Wi-Fi switches off now.';
+    $('addr').textContent = '';
+    show('done');
+    document.querySelector('#done .ok').textContent = 'Saved';
+  } else alert('Saving failed' + (r ? ' (' + r.status + ')' : ''));
 }
 load();
 </script>

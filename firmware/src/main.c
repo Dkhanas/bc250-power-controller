@@ -11,15 +11,18 @@
 //  v5: Bluetooth trouble is first fixed by restarting only Bluetooth (board keeps running);
 //      event log readable on the BC-250 over USB serial (/dev/ttyACM0) while no controller is connected
 //  v6: pairing key guard - restores a controller's key when Bluepad32 deletes it after a failed reconnect
-//  v7: pairing window - new controllers only while open (hold the case button 2 s, release); otherwise
+//  v7: pairing window - new controllers only while open (v9: double-click the case button); otherwise
 //      controllers in pairing mode are ignored, so pairing one with a phone/PC isn't taken over
 //  v8: Wi-Fi - web page (http://bc250.local) and Home Assistant (MQTT); low-battery warning
+//  v9: Wi-Fi setup checks the network before saving it; firmware update from the web page (A/B, rollback);
+//      pairing window by double click (was hold 2 s); Wi-Fi on at power-up / after a firmware install
 
 #include <stdio.h>
 
 #include "bt_bridge.h"
 #include "log.h"
 #include "net.h"
+#include "ota.h"
 #include "settings.h"
 #include "pads.h"
 #include "config.h"
@@ -28,6 +31,7 @@
 #include "hardware/structs/watchdog.h"
 #include "hardware/watchdog.h"
 #include "pico/async_context.h"
+#include "pico/bootrom.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "tusb.h"
@@ -80,6 +84,7 @@ static bool btn_long_fired;
 static uint32_t tpm_low_since;
 
 typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG, BTN_PAIR, BTN_WIFI } btn_event_t;
+static uint32_t click_pending_at;   // v9: release time of a click waiting for a second one (0 = none)
 
 static btn_event_t poll_button(uint32_t t) {
     bool pressed = !gpio_get(PIN_BUTTON);
@@ -89,18 +94,27 @@ static btn_event_t poll_button(uint32_t t) {
             btn_long_fired = false;
         } else if (!btn_long_fired) {
             uint32_t held = t - btn_down_at;
+            bool had_click = click_pending_at != 0;
+            click_pending_at = 0;
             if (state == ST_OFF && held >= WIFI_HOLD_MS) return BTN_WIFI;   // v8: console off, 8 s: Wi-Fi on
-            if (held >= PAIR_HOLD_MS) {
-                // 2 s+ hold: pairing window (with the PSU on, only up to PAIR_HOLD_MAX_MS; 5 s = force off)
-                if (state == ST_OFF || held < PAIR_HOLD_MAX_MS) return BTN_PAIR;
+            if (state != ST_OFF && held >= FORCE_OFF_WARN_MS) return BTN_NONE;   // let go just before force-off
+            if (held < CLICK_MAX_MS) {
+                if (had_click) return BTN_PAIR;            // v9: second click in time = double click: pairing
+                click_pending_at = t ? t : 1;              // first click: wait for a second one
                 return BTN_NONE;
             }
-            return BTN_SHORT;
+            return BTN_SHORT;   // longer press: one press, at once
         }
     }
-    // 5 s force-off only matters with the PSU on; with it off, longer holds are pairing / Wi-Fi (on release)
+    // single click: no second click came in time
+    if (click_pending_at && !btn_db.stable && t - click_pending_at >= DOUBLE_CLICK_MS) {
+        click_pending_at = 0;
+        return BTN_SHORT;
+    }
+    // 5 s force-off only matters with the PSU on; with it off, a long hold is Wi-Fi (on release)
     if (state != ST_OFF && btn_db.stable && !btn_long_fired && t - btn_down_at >= BUTTON_LONG_PRESS_MS) {
         btn_long_fired = true;
+        click_pending_at = 0;
         return BTN_LONG;
     }
     return BTN_NONE;
@@ -187,13 +201,12 @@ static void led_task(uint32_t t) {
         level = (ph < LED_BLINK_PAIRING_MS || (ph >= 2 * LED_BLINK_PAIRING_MS && ph < 3 * LED_BLINK_PAIRING_MS))
                     ? LED_BRIGHTNESS_ON : 0;
     }
-    // Hold feedback: from 2 s the LED double-blinks fast ("release now = pairing"); with the PSU on,
-    // past PAIR_HOLD_MAX_MS it goes dark ("keep holding = force off")
+    // Hold feedback: with the PSU on, past FORCE_OFF_WARN_MS the LED goes dark ("keep holding = force off");
+    // with it off, from 8 s it stays lit ("release = Wi-Fi on")
     if (btn_db.stable && !btn_long_fired) {
         uint32_t held = t - btn_down_at;
-        if (state != ST_OFF && held >= PAIR_HOLD_MAX_MS) level = 0;
-        else if (state == ST_OFF && held >= WIFI_HOLD_MS) level = LED_BRIGHTNESS_ON;   // "release = Wi-Fi on"
-        else if (held >= PAIR_HOLD_MS) level = ((t / 60) & 1) ? LED_BRIGHTNESS_ON : 0;
+        if (state != ST_OFF && held >= FORCE_OFF_WARN_MS) level = 0;
+        else if (state == ST_OFF && held >= WIFI_HOLD_MS) level = LED_BRIGHTNESS_ON;
     }
     pwm_set_gpio_level(PIN_LED, level);
 }
@@ -432,7 +445,7 @@ static void app_tick(uint32_t t) {
         power_off("button held");
         return;
     }
-    // Hold 2 s and release: open the pairing window
+    // Double click: open the pairing window (v9; v7-v8: hold 2 s)
     if (btn == BTN_PAIR) {
         if (cyw43_ok) bt_pairing_start();
         return;
@@ -559,8 +572,11 @@ int main(void) {
     stdio_init_all();   // UART0 on GP0/GP1 (debug log only, nothing needs to be connected)
     log_init(watchdog_caused_reboot());   // RAM log, kept across self-restarts
     log_set_status_fn(print_status);
-    printf("\nbc250: power controller starting (firmware v8)\n");
-    if (watchdog_caused_reboot()) {
+    printf("\nbc250: power controller starting (firmware %s)\n", BC250_FW_VERSION);
+    bool fw_update_boot = rom_get_last_boot_type() == BOOT_TYPE_FLASH_UPDATE;
+    if (fw_update_boot) {
+        printf("bc250: started after a firmware update\n");
+    } else if (watchdog_caused_reboot()) {
         uint32_t r = watchdog_hw->scratch[0];
         if ((r & 0xFFFF0000u) == RESTART_MAGIC && (r & 0xFFFF) <= RS_IDLE)
             printf("bc250: restarted on purpose: %s (restarts since power-on: %lu)\n",
@@ -572,6 +588,8 @@ int main(void) {
         watchdog_hw->scratch[2] = 0;
     }
     watchdog_hw->scratch[0] = 0;
+    ota_boot_init();   // v9: which firmware slot, update on trial?
+    ota_setup_slots();   // v9: first start without slots (copied over USB): set them up once, restarts
 
     usb_device_init();
     tusb_init();
@@ -586,6 +604,15 @@ int main(void) {
         cyw43_ok = true;
         settings_load();   // v8: Wi-Fi / MQTT settings from flash
         net_init();
+        // v9: Wi-Fi on for WIFI_REQUEST_MS (as after holding the case button 8 s) when the Pico
+        //  - gets power (5 V standby switched on / PSU plugged in): page reachable, or BC250-setup on a fresh Pico,
+        //    without the 8 s hold - except in the "Never" mode,
+        //  - runs a freshly installed firmware (USB or page), or went back after a failed update: shows the result.
+        bool power_on = !watchdog_caused_reboot();
+        if (fw_update_boot || ota_just_updated() || (power_on && settings.wifi_mode != WIFI_MODE_NEVER)) {
+            printf("bc250: wifi: %s\n", power_on ? "power-on" : "new firmware");
+            net_wifi_request();
+        }
     }
 
     // Start from the real button state so a press held during power-up is not seen as a click
@@ -603,6 +630,9 @@ int main(void) {
         app_tick(t);
         if (ctx) async_context_release_lock(ctx);
         restart_task(t);
+        if (ctx) async_context_acquire_lock_blocking(ctx);
+        ota_task(t, cyw43_ok && bt_stack_ready());   // v9: keep a new firmware once it runs properly
+        if (ctx) async_context_release_lock(ctx);
 
         // Watchdog only while the PSU is off: if anything hangs, the Pico restarts by itself
         if (state == ST_OFF) {

@@ -1,24 +1,38 @@
 # BC-250 power controller firmware (Pico 2 W / Pico 2 WH)
 
 ## Flash it
+From v9 on, the firmware can be **updated from the phone page** (Settings → Firmware). Put v9 on the Pico **once
+over USB**; after that, updates come from the page.
+
+**Over USB** (first time with v9, or any time):
 1. **Take the Pico out of its sockets** (or unplug the PSU from the wall for 30 s). The Pico runs on standby
    power and only checks BOOTSEL at power-up.
 2. Hold BOOTSEL, plug the Pico into a PC → it shows up as a USB drive `RP2350`. Release BOOTSEL.
-3. Copy **one** file from `release/` onto it. The drive disappears; the Pico runs the new firmware.
-   - `bc250_power_v8.uf2` – normal firmware (phone page, no Home Assistant).
-   - `bc250_power_v8_ha.uf2` – the same plus **Home Assistant** (MQTT). Only if you run Home Assistant.
+3. Copy **one** firmware file from `release/` onto it. The drive disappears; the Pico runs the new firmware.
+   - `bc250_power_v9.uf2` – normal firmware (phone page, no Home Assistant).
+   - `bc250_power_v9_ha.uf2` – the same plus **Home Assistant** (MQTT). Only if you run Home Assistant.
 
    You can switch between the two at any time; settings and paired controllers stay.
-4. Put it back the same way round (USB toward the front). Paired controllers stay paired.
+4. **First time with v9:** leave it plugged in for **10 seconds**. The firmware sets up the two firmware slots that
+   page updates need (copies itself, then restarts once). Unplugging during the last ~0.05 s of that means: copy
+   the file again. The log shows `firmware slots set up`.
+5. Put it back the same way round (USB toward the front). Paired controllers stay paired.
+
+Fallback, if the automatic set-up ever fails (log: `staying without slots`): copy `bc250_partition_table.uf2` from
+`firmware/build/` first, wait for the drive to come back, then the firmware file.
+
+**From the page** (v9 or newer already installed with the layout above): console off, open **Settings → Firmware**,
+choose the new `bc250_power_vX.uf2` (or `…_ha.uf2`), tap **Update firmware**. Details in the v9 section below.
 
 ## What it does
 | Input | State | Result |
 |---|---|---|
-| Button short press | off | PSU on (GP15 high) → board boots (AUTO_PWRON) |
+| Button short press (click) | off | PSU on (GP15 high) → board boots (AUTO_PWRON) |
 | Button short press | running | USB **Power** key sent → SteamOS shuts down |
 | Button short press | stopping | Power key sent again |
-| Button held 2 s, released | any | **Pairing window** for 60 s: a new controller can pair (LED double-blinks) |
+| Button **double click** | any | **Pairing window** for 60 s: a new controller can pair (LED double-blinks) (v9; before: hold 2 s) |
 | Button held 8 s, released (LED stays lit) | off | **Wi-Fi on** for 30 min after the last use of the page (v8) |
+| Pico gets power (5 V standby on), or new firmware installed | off | **Wi-Fi on** for 30 min, as after the 8 s hold (v9; power-on: not in the "Never" mode) |
 | Button held 5 s | any (PSU on) | PSU off immediately (LED goes dark after 4.5 s of holding) |
 | TPM pin 9 low ≥ 5 s | running/stopping | PSU off, Bluetooth controllers disconnected |
 | Paired BT controller connects or PS/Xbox/Home pressed | off | PSU on |
@@ -28,10 +42,12 @@
 | SteamOS ignores the key for 90 s | stopping | back to running (press again or hold) |
 
 Short press while the board is still booting is ignored on purpose (hold 5 s to abort).
+v9: a single click acts 0.4 s after you let go (`DOUBLE_CLICK_MS`), because the Pico waits to see whether a second
+click follows. A press longer than 0.6 s (`CLICK_MAX_MS`) acts as soon as you let go.
 
 **Button LED:** off while off · slow blink (1 Hz) booting · solid running · fast blink shutting down / TPM dropped ·
-double blink = pairing window open. While holding the button: fast flicker from 2 s ("release = pairing"),
-dark from 4.5 s ("keep holding = force off", PSU on only).
+double blink = pairing window open. While holding the button: dark from 4.5 s ("keep holding = force off",
+PSU on only), lit from 8 s ("release = Wi-Fi on", PSU off only).
 
 **Self-repair (v4-v6):**
 - **Bluetooth health check** every 10 s. If the radio stops answering or stops accepting controllers, only
@@ -64,8 +80,8 @@ Limits:
 - Short-pressing the case button while PlayStation/Switch identities are active: the Pico re-plugs as the power-key device (~2 s), then sends the key. The controllers disappear from SteamOS at that moment - it's shutting down anyway. If the shutdown doesn't happen within 90 s, they come back.
 
 ## Pairing a controller
-1. Hold the case button **2 s** and release when the LED flickers fast. The LED then double-blinks: the
-   pairing window is open for 60 s.
+1. **Double-click** the case button (v9; v7-v8: hold it 2 s). The LED double-blinks: the pairing window is open
+   for 60 s. Works with the console on or off; it doesn't switch the console on or off by itself.
 2. Put the controller in pairing mode (DualSense: Create + PS until it flashes; DS4: Share + PS;
    Switch Pro: sync button; Xbox: hold the pair button).
 3. The Pico pairs it, stores the key in flash and closes the window. If the console was off, it switches on.
@@ -100,8 +116,8 @@ sudo apt install git cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
 bash firmware/build.sh        # -> firmware/build/bc250_power.uf2 and bc250_power_ha.uf2 (downloads the libraries once into firmware/.deps/)
 ```
 **GitHub builds it too:** every push builds the firmware (Actions tab → the run → *Artifacts*). Pushing a version tag
-publishes a **Release** with both `.uf2` files (`bc250_power_v8.uf2`, `bc250_power_v8_ha.uf2`): on GitHub **Actions → Firmware → Run workflow**, type `v8`, Run (or `git tag v8 && git push origin v8`).
-The Release text is that version's section in [`../CHANGELOG.md`](../CHANGELOG.md) (`## v8 — <date>`); write it before
+publishes a **Release** with both `.uf2` files (`bc250_power_v9.uf2`, `bc250_power_v9_ha.uf2`): on GitHub **Actions → Firmware → Run workflow**, type `v9`, Run (or `git tag v9 && git push origin v9`).
+The Release text is that version's section in [`../CHANGELOG.md`](../CHANGELOG.md) (`## v9 — <date>`); write it before
 tagging, otherwise the release step stops with an error.
 
 ## Files
@@ -111,7 +127,9 @@ tagging, otherwise the release step stops with an error.
 - `src/pads.c` – per-controller slots shared between the Bluetooth and USB sides
 - `src/usb_xinput.c` – TinyUSB class driver for the Xbox 360 interfaces
 - `src/log.c` – RAM event log + USB serial log port (v5), settings commands (v8)
-- `src/net.c` – Wi-Fi, web page, Home Assistant / MQTT (v8)
+- `src/net.c` – Wi-Fi, web page, Home Assistant / MQTT (v8), firmware upload (v9)
+- `src/ota.c` – firmware update into the free slot, trial start, rollback (v9)
+- `partition_table.json` – the two-slot flash layout (v9, `bc250_partition_table.uf2`)
 - `src/settings.c` – Wi-Fi / MQTT / PIN settings in flash (v8)
 - `src/dhcpd.c`, `src/dnsd.c` – addresses + captive portal for the setup Wi-Fi (v8)
 - `web/` – the web pages and icon (embedded by `web/embed.cmake`)
@@ -221,7 +239,10 @@ The Pico 2 W's Wi-Fi is now used. Nothing secret is in the code or the repo: set
    Pico isn't set up yet.
 2. **The setup page opens by itself** (captive portal). If it doesn't, open any web address, or `http://192.168.4.1`.
 3. **Tap your network** in the list, type its password, tap **Connect**. 2.4 GHz networks only.
-4. `BC250-setup` disappears and the Pico joins your network. Put your phone back on your normal Wi-Fi and open
+   The Pico now **tries the network first** (v9), with `BC250-setup` still on: the page shows "Checking…" and then
+   either **Connected ✓** (with its address) or what went wrong (wrong password, network not found, no address).
+   On an error nothing is saved and you simply try again.
+4. After "Connected ✓", `BC250-setup` disappears a few seconds later and the Pico stays on your network. Put your phone back on your normal Wi-Fi and open
    **http://bc250.local**, then use **Add to Home Screen** in the browser menu: you get a **BC-250 icon**.
 
 If the saved network can't be reached for 5 minutes (wrong password, new router), `BC250-setup` comes back for
@@ -236,7 +257,9 @@ If the saved network can't be reached for 5 minutes (wrong password, new router)
 | **Never** | never | no Wi-Fi at all |
 
 Holding the case button 8 s (console off) turns Wi-Fi on for 30 min **in every mode**, so you can always get back to
-the page. The main page shows when Wi-Fi will switch off.
+the page. From v9 the same happens by itself when the Pico gets power (PSU plugged in / 5 V standby back; not in
+"Never") and after a new firmware is installed, over USB or from the page. A fresh Pico therefore shows
+`BC250-setup` right after flashing, without the 8 s hold. Pico self-restarts (v4) don't turn it on. The main page shows when Wi-Fi will switch off.
 
 ### The page (http://bc250.local or the home-screen icon)
 - **Power on / Shut down** (clean), status and the lowest controller battery.
@@ -248,7 +271,7 @@ the page. The main page shows when Wi-Fi will switch off.
   your Wi-Fi can use the buttons.
 - If `bc250.local` doesn't open (some Android phones), use the address shown in your router's device list ("bc250").
 
-### Home Assistant (optional, `bc250_power_v8_ha.uf2` only)
+### Home Assistant (optional, `bc250_power_v9_ha.uf2` only)
 Needs the Home Assistant firmware file; the normal one has no MQTT code and no Home Assistant section in Settings.
 Home Assistant itself can run on a Raspberry Pi 5 (Home Assistant OS); add the **Mosquitto broker** add-on and the
 **MQTT** integration. For Apple Home, add Home Assistant's **HomeKit Bridge** integration and include the BC-250's
@@ -285,3 +308,80 @@ Xbox / Switch Pro / 8BitDo don't report battery to the Pico.
 - The controller list remembers up to 8 controllers (key guard table, now with name and type).
 - Settings: `LOW_BATTERY_*`, `SETUP_HOTSPOT_*`, `WIFI_FAIL_TO_SETUP_MS`, `WIFI_HOLD_MS`, `WIFI_REQUEST_MS`,
   `WIFI_WHILE_OFF_GRACE_MS` in `src/config.h`.
+
+## v9 changes (13 Nov 2026) - Wi-Fi setup checks the connection first, firmware update from the page
+
+### Wi-Fi setup checks the connection first
+Before v9, **Connect** on the setup page saved the network and closed `BC250-setup` at once. With a typo in the
+password you only found out by waiting 5 minutes for `BC250-setup` to come back.
+- **Connect now checks first:** the Pico joins the chosen network while `BC250-setup` keeps running (the radio can
+  do both at once), for up to 30 s (`WIFI_TEST_MS`).
+  - **Works:** the network is saved, the page shows **Connected ✓** and the BC-250's address, and the hotspot closes
+    a few seconds after the page has shown that (at most 90 s, `WIFI_TEST_SHOW_MS`). The connection made during the
+    check is kept.
+  - **Fails:** nothing is saved, the hotspot stays, the page says why: *wrong password*, *network not found*,
+    *the network refused the connection*, *joined, but the router gave no address*, *no answer*. Fix and press
+    Connect again. **Save anyway (connect later)** keeps the old behaviour (e.g. router switched off right now).
+- The radio has one channel, so the hotspot has to follow the home network's channel during the check. To avoid
+  the phone dropping off, `BC250-setup` now starts on the channel of the saved network, else of the strongest
+  network around. If the phone still drops off for a moment, the page says so; it continues once the phone is back
+  on `BC250-setup`.
+- New API: `POST /api/wifi_test` (ssid, pass; same PIN rule as saving settings in setup), `GET /api/wifi_test`
+  (state `idle` / `checking` / `ok` / `failed`, reason or address; never the password).
+- Log: `checking 'NET' (setup hotspot stays on)`, `check ok - 'NET' works, address ...; saving it`,
+  `check of 'NET' failed: wrong password - nothing saved, setup hotspot stays on`.
+- Settings: `WIFI_TEST_MS`, `WIFI_TEST_SHOW_MS` in `src/config.h`.
+
+### Firmware update from the page
+**Settings → Firmware** shows the running version and its slot (A or B). Choose a `.uf2` file from a GitHub
+Release, tap **Update firmware**:
+1. The file is sent to the Pico (progress bar) and written into the **other slot** while the current firmware keeps
+   running. The console must be **off**: the Pico restarts at the end, and that would cut the PSU.
+2. The Pico restarts into the new firmware (about 20 s). The page waits and then shows **Updated to vX ✓**.
+3. The new firmware starts **on trial**. It keeps itself only once it has run for 10 s with Bluetooth working
+   (`OTA_BUY_AFTER_MS`). If it hangs, crashes or Bluetooth doesn't come up within 60 s (`OTA_BUY_DEADLINE_MS`), the
+   Pico **goes back to the previous firmware by itself**, and the page says so.
+
+Safety checks:
+- Only real BC-250 firmware files with web update are accepted (the file must contain the firmware's update marker),
+  so an update can't install something you couldn't update again from the page. Wrong chip / damaged / incomplete
+  files are refused and nothing changes.
+- Each firmware carries a SHA-256 hash; the RP2350 bootrom refuses a corrupted one and starts the old slot.
+- Settings, Wi-Fi and paired controllers live outside both slots and are never touched.
+- With a PIN set, the update asks for it. Over the open `BC250-setup` Wi-Fi, updates are refused unless a PIN is set.
+- After an update (or a rollback) Wi-Fi stays on for 30 min, in every Wi-Fi mode, so the page can show the result.
+
+How it works (RP2350 bootrom): `partition_table.json` defines slots **A** (2040 KB) and **B** (2032 KB); the last
+16 KB of flash (settings / pairing keys) are outside both. The firmware carries that table (`pt_embed.cmake` →
+`generated/pt_data.h`). Copied over USB onto a Pico without slots, it lands at the start of flash; on its first
+start (`ota_setup_slots()`) it copies itself into slot B, compares the copy byte for byte, then - from RAM, interrupts
+off - writes the partition table over the first 4 KB of flash and restarts into slot B. Slot A is then free for the
+first page update. The firmware is built as a "try before you buy" image
+with a version number (`BC250_FW_MAJOR` / `BC250_FW_MINOR` in `CMakeLists.txt`, image version 9.0 for v9) and a hash.
+The bootrom starts the slot with the higher version; after a successful update the Pico also makes sure the new slot
+wins when versions are equal (reinstalling the same version) or older (going back on purpose).
+**Raise the version for every release** (v9 → v9.1 or v10); the release workflow refuses a tag that doesn't match.
+
+USB still works at any time (BOOTSEL, copy only the firmware file - the layout stays). A firmware copied over USB
+is kept at once (no trial), so you can unplug the Pico right after copying.
+
+- Log: `update: receiving ...`, `update: 25 %` ..., `restarting into it`, then from the new firmware
+  `started on trial`, `runs fine - kept (slot B)`, or from the old one `the new firmware did not run properly -
+  back on v9 (slot A)`.
+- API: `POST /api/update` (body = the .uf2 file, `X-PIN` header if a PIN is set); `/api/status` has
+  `fw: {version, slot, web_update, trial, busy, msg}`.
+- Settings: `OTA_BUY_AFTER_MS`, `OTA_BUY_DEADLINE_MS` in `src/config.h`.
+
+### Pairing window by double click
+The pairing window now opens with a **double click** of the case button instead of holding it 2 s. Single clicks
+work as before but act 0.4 s after release (the Pico waits for a possible second click); a press longer than 0.6 s
+acts at once. Holding 5 s (force off, console on) and 8 s (Wi-Fi on, console off) are unchanged; the 2 s hold and
+its LED flicker are gone. The page's **+ Pair a new controller** and the log port `p` still open the window too.
+Settings: `CLICK_MAX_MS`, `DOUBLE_CLICK_MS`, `FORCE_OFF_WARN_MS` (was `PAIR_HOLD_MAX_MS`) in `src/config.h`.
+
+### Wi-Fi on at power-up and after a firmware install
+When the Pico gets power (5 V standby switched on, PSU plugged in) or runs a newly installed firmware (USB or page,
+also after a rollback), Wi-Fi turns on for 30 min after the last use of the page, exactly like holding the case
+button 8 s. So a freshly flashed Pico offers `BC250-setup` straight away, and a set-up one is reachable at
+`http://bc250.local` after a power cut. The "Never" mode skips the power-up case (a firmware install still turns it
+on, to show the result). Log: `wifi: power-on` / `wifi: new firmware`, then `wifi: turned on for 30 min`.

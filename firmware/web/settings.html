@@ -46,6 +46,21 @@
 
   <button onclick="save()" id="save">Save</button>
   <div id="msg" class="mut" style="margin-top:10px;min-height:20px"></div>
+
+  <div class="card" id="fwcard" style="margin-top:16px">
+    <h2>Firmware</h2>
+    <div class="mut" id="fwnow">…</div>
+    <div id="fwmsg" style="margin-top:8px"></div>
+    <div id="fwup" style="display:none">
+      <label for="fwfile">New firmware (.uf2)</label>
+      <input id="fwfile" type="file" accept=".uf2">
+      <div class="mut" style="margin-top:6px">From the GitHub Release: <b>bc250_power_vX.uf2</b>
+        (or <b>…_ha.uf2</b> with Home Assistant). The console must be off. The Pico restarts (about 20 s); if the
+        new firmware doesn't start properly, it goes back to this one by itself. Settings and controllers stay.</div>
+      <button class="sec" id="fwgo" onclick="fwUpdate()" style="margin-top:12px">Update firmware</button>
+      <progress id="fwprog" max="100" value="0" style="width:100%;display:none;margin-top:10px"></progress>
+    </div>
+  </div>
   <div class="foot"><a href="/">Back</a></div>
 </main>
 <script src="/app.js"></script>
@@ -125,6 +140,90 @@ async function save() {
   }
 }
 load();
+
+// ---- firmware update (v9)
+let fw = null;
+async function loadFw() {
+  let s;
+  try { s = await (await fetch('/api/status', { cache: 'no-store' })).json(); } catch (e) { return null; }
+  fw = s;
+  const f = s.fw || {};
+  $('fwnow').textContent = 'Running ' + s.version + (f.web_update ? ' (slot ' + f.slot + ')' : '') + '.';
+  $('fwmsg').textContent = f.msg || '';
+  $('fwmsg').className = /failed|didn't|went back/.test(f.msg || '') ? 'bad' : (/✓/.test(f.msg || '') ? 'ok' : 'mut');
+  if (!f.web_update) {
+    $('fwup').style.display = 'none';
+    $('fwmsg').className = 'mut';
+    $('fwmsg').textContent = (f.msg ? f.msg + ' ' : '') + 'Updating from here needs the two firmware slots. Copy ' +
+      'bc250_power_' + s.version.replace(/-ha$/, '') + (/-ha$/.test(s.version) ? '_ha' : '') + '.uf2 over USB once ' +
+      '(BOOTSEL) and leave the Pico plugged in for 10 s: it sets the slots up by itself.';
+  } else {
+    $('fwup').style.display = '';
+    $('fwgo').disabled = s.power === 'ON' || f.trial || f.busy;
+    if (s.power === 'ON') $('fwmsg').textContent = 'Switch the console off to update the firmware.';
+  }
+  return s;
+}
+
+function uploadFile(file) {
+  return new Promise(res => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/update');
+    x.setRequestHeader('X-PIN', pin());
+    x.setRequestHeader('Content-Type', 'application/octet-stream');
+    x.upload.onprogress = e => { if (e.lengthComputable) $('fwprog').value = Math.round(e.loaded * 100 / e.total); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {} res({ status: x.status, j: j }); };
+    x.onerror = () => res({ status: 0, j: {} });
+    x.send(file);
+  });
+}
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+async function fwUpdate() {
+  const file = $('fwfile').files[0];
+  if (!file) { $('fwfile').click(); return; }
+  if (!/\.uf2$/i.test(file.name) || file.size % 512) { alert('Choose a .uf2 firmware file.'); return; }
+  const haNow = /-ha$/.test(fw.version), haFile = /_ha\.uf2$/i.test(file.name);
+  if (haNow !== haFile && !confirm(haFile ? 'This is the Home Assistant firmware - install it?'
+                                          : 'This firmware has no Home Assistant (you run the Home Assistant one) - install it?')) return;
+  const before = (await loadFw()) || fw;
+  if ($('fwgo').disabled) return;   // console on / update busy (loadFw says why)
+  $('fwgo').disabled = true;
+  $('fwprog').style.display = '';
+  $('fwprog').value = 0;
+  $('fwmsg').className = 'mut';
+  $('fwmsg').textContent = 'Sending ' + file.name + '…';
+  let r = await uploadFile(file);
+  if (r.status === 403 && /PIN/.test(r.j.msg || '')) { setPin(prompt('PIN') || ''); r = await uploadFile(file); }
+  $('fwprog').style.display = 'none';
+  if (r.status !== 200) {
+    await loadFw();
+    $('fwmsg').className = 'bad';
+    $('fwmsg').textContent = r.j.msg || (r.status ? 'Update failed (' + r.status + ')' :
+      'The upload broke off. ' + ((fw && fw.fw && fw.fw.msg) || 'Try again.'));
+    $('fwgo').disabled = false;
+    return;
+  }
+  // Restarting: wait until the Pico answers again, then show what it runs
+  $('fwmsg').textContent = r.j.msg;
+  const t0 = Date.now();
+  await wait(5000);
+  while (Date.now() - t0 < 150000) {
+    const s = await loadFw();
+    if (s && s.uptime < (before.uptime + (Date.now() - t0) / 1000) - 2) {   // it has restarted
+      if (s.fw.trial) { $('fwmsg').className = 'mut'; $('fwmsg').textContent = 'New firmware ' + s.version + ' is starting…'; }
+      else return;   // loadFw() shows the result ("Updated to … ✓" or "went back")
+    } else {
+      $('fwmsg').className = 'mut';
+      $('fwmsg').textContent = 'Restarting… (' + Math.round((Date.now() - t0) / 1000) + ' s)';
+    }
+    await wait(2000);
+  }
+  $('fwmsg').className = 'bad';
+  $('fwmsg').textContent = 'The BC-250 page doesn\'t answer. Wait a minute and reload; if Wi-Fi is set to "only when I ' +
+    'turn it on", hold the case button 8 s.';
+}
+loadFw();
 </script>
 </body>
 </html>

@@ -3,6 +3,36 @@
 Firmware versions are the `v…` tags; each GitHub Release shows the section of the same name below.
 How to flash: [`firmware/README.md`](firmware/README.md#flash-it). Paired controllers and settings survive an update.
 
+## v9 — 2026-11-13
+**Firmware update from the phone page, and Wi-Fi setup checks the connection before closing `BC250-setup`.**
+Not tested on real hardware yet.
+
+Install (once, over USB): BOOTSEL, copy `bc250_power_v9.uf2` (or `_ha`), leave it plugged in for 10 s - on its
+first start it sets up the two firmware slots by itself and restarts once. Settings and paired controllers stay.
+From then on, updates work from the page.
+
+New
+- **Settings → Firmware:** choose a `.uf2`, tap **Update firmware** (console off). It is written into the second
+  firmware slot while the Pico keeps running, then the Pico restarts into it. If the new firmware doesn't run
+  properly (hangs, or Bluetooth doesn't start within 60 s), the Pico **goes back to the previous one by itself**.
+- Only BC-250 firmware with web update is accepted; damaged or wrong files are refused before anything changes.
+- New flash layout with two firmware slots, set up by the firmware itself on its first start (one file to copy).
+- **Pairing window by double-clicking the case button** (was: hold 2 s). Single clicks act 0.4 s after release,
+  while the Pico waits for a possible second click.
+- **Wi-Fi turns on by itself for 30 min** when the Pico gets power (5 V standby / PSU plugged in) and after a new
+  firmware is installed: a freshly flashed Pico shows `BC250-setup` without the 8 s button hold. Not at power-up in
+  the "Never" mode; not after the Pico's own self-restarts.
+
+Changed
+- **Connect** on the setup page now tries the network first, with `BC250-setup` still on. Only when the Pico got an
+  address is the network saved; the page shows **Connected ✓** with the address, then the setup Wi-Fi closes.
+- On failure nothing is saved and the setup Wi-Fi stays: the page says why (wrong password, network not found,
+  no address from the router, no answer) and you can try again right away instead of waiting 5 minutes.
+  **Save anyway** keeps the old behaviour.
+- `BC250-setup` starts on the home network's likely channel, so the phone stays connected during the check.
+- Firmware images now carry a version number (9.0) and a SHA-256 hash checked by the bootrom. Every release must
+  raise `BC250_FW_MAJOR` / `BC250_FW_MINOR` in `firmware/CMakeLists.txt`; the release workflow checks it.
+
 ## PCB v12 — 2026-11-06
 **Back to v9's ATX pin order, now confirmed with the real PSU cable, plus spaced-out front headers.**
 

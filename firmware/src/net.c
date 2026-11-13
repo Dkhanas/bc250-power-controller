@@ -7,6 +7,7 @@
 #include "bt_bridge.h"
 #include "dhcpd.h"
 #include "dnsd.h"
+#include "ota.h"
 #include "web_assets.h"
 #include "lwip/apps/mdns.h"
 #if BC250_HA
@@ -20,9 +21,9 @@
 #include "settings.h"
 
 #if BC250_HA
-#define FW_VERSION "v8-ha"   // with Home Assistant (bc250_power_ha.uf2)
+#define FW_VERSION BC250_FW_VERSION "-ha"   // with Home Assistant (bc250_power_ha.uf2)
 #else
-#define FW_VERSION "v8"
+#define FW_VERSION BC250_FW_VERSION
 #endif
 
 // ================================================================== Wi-Fi
@@ -39,6 +40,8 @@ static uint32_t ap_until;          // 0 = no forced hotspot period
 static uint32_t sta_fail_since;    // saved network not reachable since (0 = fine / not trying)
 static bool change_pending;
 static bool setup_scanned;         // network list taken before opening the hotspot
+static uint8_t ap_channel;         // channel the hotspot runs on (0 = not running)
+static void wtest_abort(const char* why);
 static uint32_t req_until;         // Wi-Fi requested until (0 = no request)
 static bool console_on;            // for WIFI_MODE_WHILE_OFF
 static uint32_t console_on_at;
@@ -91,6 +94,7 @@ void net_radio_was_reset(void) {
         dhcpd_stop();
         dnsd_stop();
         ap_on = false;      // restarted by wifi_task
+        wtest_abort("radio was reset - try again");
     }
     if (w != W_OFF) {
         w = W_CONNECTING;
@@ -104,6 +108,8 @@ static void mqtt_on_wifi(bool up);
 static bool scanning;
 static void scan_start(uint32_t t);
 static void scan_task(uint32_t t);
+static int setup_channel(void);
+static int json_str(char* out, int n, const char* s);
 
 static void sta_stop(void) {
     if (w == W_UP) mqtt_on_wifi(false);
@@ -120,18 +126,24 @@ static void sta_stop(void) {
 static void ap_start(void) {
     sta_stop();
     bool open = SETUP_HOTSPOT_PASSWORD[0] == 0;
+    // The radio has one channel: when the Wi-Fi check (below) joins the home network while the hotspot runs, the
+    // hotspot has to move to that network's channel and the phone may drop off for a moment. So start it on the
+    // channel the home network most likely uses (the saved network, else the strongest one around).
+    ap_channel = (uint8_t)setup_channel();
+    cyw43_wifi_ap_set_channel(&cyw43_state, ap_channel);
     cyw43_arch_enable_ap_mode(SETUP_HOTSPOT_SSID, open ? NULL : SETUP_HOTSPOT_PASSWORD,
                               open ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK);
     dhcpd_start(ap_netif());
     dnsd_start(ap_netif());   // captive portal: every name -> 192.168.4.1
     http_start();
     ap_on = true;
-    printf("bc250: wifi: setup hotspot on - join '%s'%s, the setup page opens by itself (or http://192.168.4.1)\n",
-           SETUP_HOTSPOT_SSID, open ? "" : " (password " SETUP_HOTSPOT_PASSWORD ")");
+    printf("bc250: wifi: setup hotspot on (channel %u) - join '%s'%s, the setup page opens by itself (or http://192.168.4.1)\n",
+           ap_channel, SETUP_HOTSPOT_SSID, open ? "" : " (password " SETUP_HOTSPOT_PASSWORD ")");
 }
 
 static void ap_stop(void) {
     if (!ap_on) return;
+    wtest_abort("setup hotspot closed");
     dhcpd_stop();
     dnsd_stop();
     cyw43_arch_disable_ap_mode();
@@ -154,12 +166,120 @@ static void wifi_start(uint32_t t) {
     if (!sta_fail_since) sta_fail_since = t ? t : 1;
 }
 
+// ---- Wi-Fi check during setup (v9)
+// The setup page doesn't just save the network: the Pico first joins it *while the hotspot keeps running*
+// (the radio can do both at once). Only when that works is the network saved and the hotspot closed - after the
+// page has shown the result. Wrong password / network not found: nothing is saved, the hotspot stays, the page
+// says what went wrong and you can try again.
+typedef enum { WT_IDLE, WT_START, WT_RUNNING, WT_OK, WT_FAIL } wtest_state_t;
+static struct {
+    wtest_state_t st;
+    char ssid[33];
+    char pass[64];
+    uint32_t deadline;     // give up then
+    uint32_t done_at;      // result reached
+    bool shown;            // the page has fetched the final result
+    uint32_t seq;          // bumped per check, so the page knows which result it sees
+    char msg[96];          // failure reason / address on success
+} wt;
+
+static void wtest_abort(const char* why) {
+    if (wt.st != WT_START && wt.st != WT_RUNNING) return;
+    wt.st = WT_FAIL;
+    wt.done_at = now_ms_net();
+    snprintf(wt.msg, sizeof(wt.msg), "%s", why);
+    printf("bc250: wifi: check of '%s' stopped (%s)\n", wt.ssid, why);
+}
+
+// Start a check (setup page). Returns false if no hotspot is running.
+static bool wtest_begin(const char* ssid, const char* pass) {
+    if (!ap_on || !ssid[0]) return false;
+    snprintf(wt.ssid, sizeof(wt.ssid), "%s", ssid);
+    snprintf(wt.pass, sizeof(wt.pass), "%s", pass);
+    wt.st = WT_START;
+    wt.shown = false;
+    wt.msg[0] = 0;
+    wt.seq++;
+    return true;
+}
+
+static void wtest_task(uint32_t t) {
+    if (wt.st == WT_START) {
+        if (scanning) return;   // let a running scan finish first
+        if (!sta_enabled) {
+            cyw43_arch_enable_sta_mode();
+            sta_enabled = true;
+            mdns_on_netif = false;
+        } else {
+            cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+        }
+        int auth = wt.pass[0] ? CYW43_AUTH_WPA2_MIXED_PSK : CYW43_AUTH_OPEN;
+        int r = cyw43_arch_wifi_connect_async(wt.ssid, wt.pass[0] ? wt.pass : NULL, auth);
+        printf("bc250: wifi: checking '%s' (setup hotspot stays on)%s\n", wt.ssid, r ? " - start failed" : "");
+        if (r) {
+            wt.st = WT_FAIL;
+            wt.done_at = t;
+            snprintf(wt.msg, sizeof(wt.msg), "the radio didn't start the connection - try again");
+            return;
+        }
+        wt.st = WT_RUNNING;
+        wt.deadline = t + WIFI_TEST_MS;
+        // a fallback hotspot period must not end in the middle of the check
+        if (ap_until && (int32_t)(ap_until - (t + WIFI_TEST_MS + WIFI_TEST_SHOW_MS)) < 0)
+            ap_until = t + WIFI_TEST_MS + WIFI_TEST_SHOW_MS;
+        return;
+    }
+    if (wt.st != WT_RUNNING) return;
+
+    int ls = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    const char* why = NULL;
+    if (ls == CYW43_LINK_UP) {
+        snprintf(wt.msg, sizeof(wt.msg), "%s", ip4addr_ntoa(netif_ip4_addr(sta_netif())));
+        printf("bc250: wifi: check ok - '%s' works, address %s; saving it\n", wt.ssid, wt.msg);
+        wt.st = WT_OK;
+        wt.done_at = t;
+        // Save it. The station stays connected; wifi_task keeps the hotspot until the page has shown the result.
+        snprintf(settings.ssid, sizeof(settings.ssid), "%s", wt.ssid);
+        snprintf(settings.pass, sizeof(settings.pass), "%s", wt.pass);
+        settings_save();
+        memset(wt.pass, 0, sizeof(wt.pass));
+        return;
+    }
+    if (ls == CYW43_LINK_BADAUTH) why = "wrong password";
+    else if (ls == CYW43_LINK_NONET) why = "network not found (out of range, or 5 GHz only?)";
+    else if (ls == CYW43_LINK_FAIL) why = "the network refused the connection";
+    else if ((int32_t)(t - wt.deadline) >= 0)
+        why = (ls == CYW43_LINK_JOIN || ls == CYW43_LINK_NOIP) ? "joined, but the router gave no address (DHCP)"
+                                                               : "no answer from the network";
+    if (!why) return;
+    printf("bc250: wifi: check of '%s' failed: %s - nothing saved, setup hotspot stays on\n", wt.ssid, why);
+    cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+    wt.st = WT_FAIL;
+    wt.done_at = t;
+    snprintf(wt.msg, sizeof(wt.msg), "%s", why);
+    memset(wt.pass, 0, sizeof(wt.pass));
+}
+
+static int wtest_json(char* b, int n) {
+    static const char* names[] = {"idle", "checking", "checking", "ok", "failed"};
+    char ss[80], m[120];
+    json_str(ss, sizeof(ss), wt.ssid);
+    json_str(m, sizeof(m), wt.msg);
+    if (wt.st == WT_OK || wt.st == WT_FAIL) wt.shown = true;
+    return snprintf(b, (size_t)n, "{\"state\":\"%s\",\"seq\":%lu,\"ssid\":%s,\"msg\":%s,\"left\":%ld}", names[wt.st],
+                    (unsigned long)wt.seq, ss, m,
+                    wt.st == WT_RUNNING ? (long)((int32_t)(wt.deadline - now_ms_net()) / 1000) : 0L);
+}
+
 static void wifi_task(uint32_t t) {
     if (settings_version != seen_settings) {   // new / changed settings
         bool first = seen_settings == 0xFFFFFFFFu;
         seen_settings = settings_version;
         sta_fail_since = 0;
-        if (ap_on && settings.ssid[0]) {
+        if (ap_on && settings.ssid[0] && wt.st == WT_OK && t - wt.done_at < 1000) {
+            ap_until = t + WIFI_TEST_SHOW_MS;   // checked + saved: hotspot stays until the page has shown it
+        } else if (ap_on && settings.ssid[0]) {
+            wtest_abort("settings saved");
             ap_until = t + 3000;   // let the settings page get its answer, then switch to the network
         } else {
             ap_until = 0;
@@ -209,6 +329,9 @@ static void wifi_task(uint32_t t) {
             }
             ap_start();
         }
+        wtest_task(t);
+        // result shown on the phone: close the hotspot a few seconds later
+        if (wt.st == WT_OK && wt.shown && ap_until && (int32_t)(ap_until - (t + 4000)) > 0) ap_until = t + 4000;
         return;
     }
     setup_scanned = false;   // next time the hotspot opens, look again
@@ -315,12 +438,14 @@ static int status_json(char* b, int n) {
     json_str(pn, sizeof(pn), pi.name);
     k += snprintf(b + k, (size_t)(n - k),
                   "],\"pair\":{\"active\":%s,\"left\":%d,\"seq\":%lu,\"result\":\"%s\",\"name\":%s},\"setup\":%s,"
-                  "\"wifi\":{\"mode\":%u,\"off_in\":%ld},\"version\":\"%s\"}",
+                  "\"wifi\":{\"mode\":%u,\"off_in\":%ld},\"version\":\"%s\",",
                   pi.active ? "true" : "false", pi.left_s, (unsigned long)pi.seq, pi.result, pn, ap_on ? "true" : "false",
                   settings.wifi_mode,
                   (settings.wifi_mode != WIFI_MODE_ALWAYS && req_active(now_ms_net()))
                       ? (long)((req_until - now_ms_net()) / 1000) : -1L,
                   FW_VERSION);
+    if (k < n - 1) k += ota_status_json(b + k, n - k);   // v9: firmware slot / update result
+    if (k < n - 1) k += snprintf(b + k, (size_t)(n - k), "}");
     return k;
 }
 
@@ -330,6 +455,7 @@ typedef struct {
     char ssid[33];
     int16_t rssi;
     bool lock;
+    uint8_t channel;   // of the strongest access point seen
 } wnet_t;
 static wnet_t nets[NET_MAX];
 static int net_n;
@@ -343,7 +469,10 @@ static int scan_cb(void* env, const cyw43_ev_scan_result_t* r) {
     s[r->ssid_len] = 0;
     for (int i = 0; i < net_n; i++) {
         if (strcmp(nets[i].ssid, s) == 0) {   // same network seen on another access point / channel
-            if (r->rssi > nets[i].rssi) nets[i].rssi = r->rssi;
+            if (r->rssi > nets[i].rssi) {
+                nets[i].rssi = r->rssi;
+                nets[i].channel = (uint8_t)r->channel;
+            }
             return 0;
         }
     }
@@ -357,7 +486,19 @@ static int scan_cb(void* env, const cyw43_ev_scan_result_t* r) {
     snprintf(nets[slot].ssid, sizeof(nets[slot].ssid), "%s", s);
     nets[slot].rssi = r->rssi;
     nets[slot].lock = r->auth_mode != 0;
+    nets[slot].channel = (uint8_t)r->channel;
     return 0;
+}
+
+// Hotspot channel: the saved network's, else the strongest network's, else 6
+static int setup_channel(void) {
+    int best = -1;
+    for (int i = 0; i < net_n; i++) {
+        if (nets[i].channel < 1 || nets[i].channel > 13) continue;
+        if (settings.ssid[0] && strcmp(nets[i].ssid, settings.ssid) == 0) return nets[i].channel;
+        if (best < 0 || nets[i].rssi > nets[best].rssi) best = i;
+    }
+    return best >= 0 ? nets[best].channel : 6;
 }
 
 // Start a scan (station interface must be up). Results arrive in scan_cb.
@@ -490,10 +631,31 @@ typedef struct {
     uint16_t len;
     bool done;
     uint8_t idle;
+    // v9: firmware upload (POST /api/update) - the body is streamed into flash by net_task, not kept here
+    bool upload;
+    struct pbuf* upq;          // received, not yet written (TCP window stays closed until written: flow control)
+    uint16_t pre_off, pre_len; // body bytes that arrived with the headers (in req)
+    uint32_t body_left;
 } hconn_t;
 static hconn_t hc[HTTP_CONNS];
 
+static hconn_t* up_conn;        // the connection uploading a firmware (one at a time)
+static uint32_t reboot_at;      // restart into the new firmware then (0 = no)
+
+static void up_drop(hconn_t* c) {   // stop an upload on this connection (if any)
+    if (c->upq) {
+        pbuf_free(c->upq);
+        c->upq = NULL;
+    }
+    c->upload = false;
+    if (up_conn == c) {
+        ota_cancel();   // no-op after a complete upload
+        up_conn = NULL;
+    }
+}
+
 static void h_close(hconn_t* c) {
+    up_drop(c);
     if (!c->pcb) return;
     tcp_arg(c->pcb, NULL);
     tcp_recv(c->pcb, NULL);
@@ -510,6 +672,7 @@ static void h_send_hdr(hconn_t* c, int code, const char* type, int blen, const c
                       : code == 302 ? "Found"
                       : code == 403 ? "Forbidden"
                       : code == 405 ? "Method Not Allowed"
+                      : code == 409 ? "Conflict"
                                     : "Not Found";
     int hl = snprintf(hdr, sizeof(hdr), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n%sConnection: close\r\n\r\n",
                       code, msg, type, blen, extra ? extra : "Cache-Control: no-store\r\n");
@@ -567,7 +730,7 @@ static bool host_is_me(const char* req) {
     return strncmp(h, "192.168.4.1", 11) == 0 && (h[11] == '\r' || h[11] == ':');
 }
 
-static char resp[1600];   // response buffer (lwIP callbacks run one at a time; keeps it off the small stack)
+static char resp[2048];   // response buffer (lwIP callbacks run one at a time; keeps it off the small stack)
 
 static void h_handle(hconn_t* c) {
     if (req_active(now_ms_net())) req_until = now_ms_net() + WIFI_REQUEST_MS;   // in use: keep it on
@@ -603,6 +766,10 @@ static void h_handle(hconn_t* c) {
         h_send(c, 200, "application/json", resp, status_json(resp, sizeof(resp)));
         return;
     }
+    if (get && strcmp(path, "/api/wifi_test") == 0) {   // result of the setup Wi-Fi check (no password in it)
+        h_send(c, 200, "application/json", resp, wtest_json(resp, sizeof(resp)));
+        return;
+    }
     if (get && strcmp(path, "/api/networks") == 0) {
         h_send(c, 200, "application/json", resp, networks_json(resp, sizeof(resp)));
         return;
@@ -615,7 +782,7 @@ static void h_handle(hconn_t* c) {
         return;
     }
     // In setup mode the network form works without the PIN (nothing to protect yet), the rest doesn't
-    bool open_ok = ap_on && strcmp(path, "/api/settings") == 0 && !settings.ssid[0];
+    bool open_ok = ap_on && (strcmp(path, "/api/settings") == 0 || strcmp(path, "/api/wifi_test") == 0) && !settings.ssid[0];
     if (!open_ok && !pin_ok(c->req)) {
         h_send(c, 403, "text/plain", "PIN required", 12);
         return;
@@ -629,6 +796,19 @@ static void h_handle(hconn_t* c) {
         settings_apply(body, m, sizeof(m));
         json_str(js, sizeof(js), m);
         h_send(c, 200, "application/json", resp, snprintf(resp, sizeof(resp), "{\"ok\":true,\"msg\":%s}", js));
+        return;
+    }
+    if (strcmp(path, "/api/wifi_test") == 0) {   // setup page: check the network, save it only if it works
+        char ss[33] = "", pw[64] = "";
+        form_get(body, "ssid", ss, sizeof(ss));
+        form_get(body, "pass", pw, sizeof(pw));
+        if (wtest_begin(ss, pw)) {
+            printf("bc250: web: check Wi-Fi '%s'\n", ss);
+            h_send(c, 200, "application/json", resp, wtest_json(resp, sizeof(resp)));
+        } else {
+            h_send(c, 409, "text/plain", "no setup hotspot", 16);
+        }
+        memset(pw, 0, sizeof(pw));
         return;
     }
     if (strcmp(path, "/api/networks/scan") == 0) {
@@ -657,6 +837,94 @@ static void h_handle(hconn_t* c) {
     h_send(c, 404, "text/plain", "not found", 9);
 }
 
+// ---- v9: firmware upload. The page sends the .uf2 file as the raw body of POST /api/update.
+static void up_reply(hconn_t* c, int code, const char* m) {
+    char js[200];
+    json_str(js, sizeof(js), m);
+    up_drop(c);
+    if (c->pcb) h_send(c, code, "application/json", resp,
+                       snprintf(resp, sizeof(resp), "{\"ok\":%s,\"msg\":%s}", code == 200 ? "true" : "false", js));
+}
+
+static void up_start(hconn_t* c, struct pbuf* p, uint16_t n, const char* end) {
+    const char* cl = strstr(c->req, "\r\nContent-Length:");
+    if (!cl) cl = strstr(c->req, "\r\ncontent-length:");
+    long len = cl ? atol(cl + 17) : 0;
+    char err[200] = "";
+    app_status_t st;
+    app_get_status(&st);
+    int code = 0;
+    if (!pin_ok(c->req)) code = 403, snprintf(err, sizeof(err), "PIN required");
+    else if (ap_on && !settings.pin[0])
+        code = 403, snprintf(err, sizeof(err), "Not over the open setup Wi-Fi: connect the Pico to your network first");
+    else if (st.psu) code = 409, snprintf(err, sizeof(err), "Switch the console off first (the Pico restarts after an update)");
+    else if (up_conn) code = 409, snprintf(err, sizeof(err), "another update is running");
+    else if (len <= 0) code = 400, snprintf(err, sizeof(err), "empty upload");
+    else if (ota_begin((uint32_t)len, err, sizeof(err))) code = 400;
+    if (code) {
+        tcp_recved(c->pcb, p->tot_len);
+        pbuf_free(p);
+        printf("bc250: web: update refused - %s\n", err);
+        up_reply(c, code, err);
+        return;
+    }
+    // Accepted: from now on the TCP window only opens as fast as the flash is written (net_task)
+    printf("bc250: web: firmware update started (%ld bytes)\n", len);
+    c->upload = true;
+    up_conn = c;
+    c->pre_off = (uint16_t)(end + 4 - c->req);
+    c->pre_len = c->len;
+    c->body_left = (uint32_t)len;
+    // window back only for what is consumed: headers + body bytes now in req; the rest stays queued
+    tcp_recved(c->pcb, n);
+    c->upq = pbuf_free_header(p, n);
+}
+
+static void up_task(uint32_t t) {
+    if (reboot_at && (int32_t)(t - reboot_at) >= 0) ota_reboot();
+    hconn_t* c = up_conn;
+    if (!c || !c->upload || !c->pcb) return;
+    static uint8_t chunk[1024];
+    char err[200];
+    uint32_t budget = 16 * 1024;   // per main-loop pass, keeps USB / Bluetooth / watchdog going
+    while (budget && c->body_left) {
+        const uint8_t* d;
+        uint32_t k;
+        bool from_q = false;
+        if (c->pre_off < c->pre_len) {
+            d = (const uint8_t*)c->req + c->pre_off;
+            k = c->pre_len - c->pre_off;
+        } else if (c->upq) {
+            k = c->upq->tot_len < sizeof(chunk) ? c->upq->tot_len : sizeof(chunk);
+            k = pbuf_copy_partial(c->upq, chunk, (u16_t)k, 0);
+            d = chunk;
+            from_q = true;
+        } else {
+            break;   // wait for more
+        }
+        if (k > budget) k = budget;
+        if (k > c->body_left) k = c->body_left;
+        if (!k) break;
+        if (ota_write(d, k, err, sizeof(err))) {
+            up_reply(c, 400, err);
+            return;
+        }
+        if (from_q) {
+            c->upq = pbuf_free_header(c->upq, (u16_t)k);
+            tcp_recved(c->pcb, (u16_t)k);
+        } else {
+            c->pre_off += (uint16_t)k;
+        }
+        c->body_left -= k;
+        budget -= k;
+        c->idle = 0;
+    }
+    if (c->body_left) return;
+    int r = ota_end(err, sizeof(err));
+    up_reply(c, r ? 400 : 200, err);
+    if (!r) reboot_at = t + 1500 ? t + 1500 : 1;   // let the page get the answer first
+}
+
 static err_t h_sent(void* arg, struct tcp_pcb* pcb, u16_t len) {
     (void)len;
     hconn_t* c = arg;
@@ -675,6 +943,12 @@ static err_t h_recv(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t err) {
         h_close(c);
         return ERR_OK;
     }
+    if (c->upload) {   // v9: firmware upload - queue it, net_task writes it to flash and opens the window again
+        if (c->upq) pbuf_cat(c->upq, p);
+        else c->upq = p;
+        c->idle = 0;
+        return ERR_OK;
+    }
     if (!c->done) {
         uint16_t room = (uint16_t)(sizeof(c->req) - 1 - c->len);
         uint16_t n = p->tot_len < room ? p->tot_len : room;
@@ -683,6 +957,10 @@ static err_t h_recv(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t err) {
         c->req[c->len] = 0;
         c->idle = 0;
         const char* end = strstr(c->req, "\r\n\r\n");
+        if (end && strncmp(c->req, "POST /api/update ", 17) == 0) {
+            up_start(c, p, n, end);   // takes p
+            return ERR_OK;
+        }
         bool complete = c->len >= sizeof(c->req) - 1;
         if (end && !complete) {
             const char* cl = strstr(c->req, "\r\nContent-Length:");
@@ -707,7 +985,11 @@ static err_t h_poll(void* arg, struct tcp_pcb* pcb) {
 static void h_err(void* arg, err_t err) {
     (void)err;
     hconn_t* c = arg;
-    if (c) c->pcb = NULL;   // pcb already freed by lwIP
+    if (c) {
+        if (c->upload) printf("bc250: update: connection lost\n");
+        up_drop(c);
+        c->pcb = NULL;   // pcb already freed by lwIP
+    }
 }
 
 static err_t h_accept(void* arg, struct tcp_pcb* pcb, err_t err) {
@@ -992,6 +1274,7 @@ void net_init(void) {
 }
 
 void net_task(uint32_t t) {
+    up_task(t);   // v9: firmware upload -> flash, restart into it
     wifi_task(t);
     scan_task(t);
     if (w == W_UP) mqtt_task(t);
