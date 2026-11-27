@@ -85,6 +85,9 @@
 #define BT_CONNECT_STUCK_MS     20000
 #define BT_CONNECT_FAILS_MAX    3
 #define BT_CONNECT_WINDOW_MS    60000
+// v10: restart Bluetooth when a Bluetooth LE controller (Xbox) drops before it is ready this many times in a
+// row, however far apart the attempts are. A controller that gets ready resets the count.
+#define BT_LE_FAILS_MAX         2
 #define BT_RESTART_STOP_MS      10000   // stack must stop within this
 #define BT_RESTART_START_MS     20000   // and be running again within this
 // At most this many Bluetooth restarts per window; after that the Pico restarts itself

@@ -25,7 +25,7 @@ pico_sdk_init()
 
 # Firmware version. v9+: also the image version the RP2350 bootrom uses to pick between the two firmware slots
 # (A/B, see partition_table.json), so raise it for every release: MAJOR = vN, MINOR = fix number (v9.1 -> 9, 1).
-set(BC250_FW_MAJOR 9)
+set(BC250_FW_MAJOR 10)
 set(BC250_FW_MINOR 0)
 if(BC250_FW_MINOR EQUAL 0)
     set(BC250_FW_VERSION "v${BC250_FW_MAJOR}")

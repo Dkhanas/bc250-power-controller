@@ -3,6 +3,24 @@
 Firmware versions are the `v…` tags; each GitHub Release shows the section of the same name below.
 How to flash: [`firmware/README.md`](firmware/README.md#flash-it). Paired controllers and settings survive an update.
 
+## v10 — 2026-11-27
+**Fix: an Xbox (Bluetooth LE) controller that dropped during a reconnect could never connect again until the
+Bluetooth restart / PSU unplug.** Not tested on real hardware yet. Update from the page (console off) or over USB
+with `bc250_power_v10.uf2` (or `_ha`). Settings and paired controllers stay.
+
+Fixed
+- If a Bluetooth LE controller (Xbox) dropped while the Pico was reading its device info, every later reconnect
+  failed: it looked connected, did nothing and switched off after 20 s (log: `Failed to set device information
+  client: 0xc`, then `Device cannot connect in time`). The Pico now resets that part of Bluetooth whenever a BLE
+  controller drops before it is ready.
+- The Bluetooth self-repair now also sees Bluetooth LE controllers: 2 drops in a row before ready restart Bluetooth
+  (the board keeps running). Before, only Classic controllers (DualSense, DualShock, Switch Pro) were counted.
+- A Classic controller that connected fine was still treated as "linked up but not ready". This could restart
+  Bluetooth 20 s after a good connect.
+- Log port: one-shot commands (`echo r | sudo tee /dev/ttyACM0`) work without `sudo cat /dev/ttyACM0` running.
+  Answers show up the next time you read the log.
+- Log port: the log echoed back by the terminal no longer produces `unknown command` lines.
+
 ## v9 — 2026-11-13
 **Firmware update from the phone page, and Wi-Fi setup checks the connection before closing `BC250-setup`.**
 Not tested on real hardware yet.

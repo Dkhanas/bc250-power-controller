@@ -3,7 +3,7 @@
 ## What it does
 - Case button short press: PSU on (board auto-boots) / clean shutdown (USB power key)
 - Case button hold 5 s: force PSU off
-- Case button hold 2 s: pairing window (60 s) for a new controller; otherwise controllers in pairing mode are ignored
+- Case button double-click: pairing window (60 s) for a new controller; otherwise controllers in pairing mode are ignored
 - Paired Bluetooth controller wakes the board and is passed to the BC-250 over USB
 - Optional Wi-Fi: web page `http://bc250.local` and Home Assistant (MQTT); low-battery warning on the controller
 - Bluetooth self-repair (health check, Bluetooth-only restart, pairing key guard) and an event log readable on the

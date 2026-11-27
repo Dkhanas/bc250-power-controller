@@ -6,6 +6,7 @@
 #include "btstack_tlv.h"
 #include "net.h"
 #include "ble/le_device_db.h"
+#include "ble/gatt-service/device_information_service_client.h"
 #include <uni.h>
 
 #include "config.h"
@@ -40,7 +41,29 @@ typedef struct {
 static bt_slot_t bs[MAX_PADS];
 
 static volatile uint32_t h_ready_events;     // health check: a controller became ready
-static void bt_note_ready(void) { h_ready_events++; }
+static volatile bool h_acl_pending;          // link up, controller not ready yet
+static volatile uint32_t h_acl_up_at;
+static volatile hci_con_handle_t h_le_pending = HCI_CON_HANDLE_INVALID;   // v10: BLE link not ready yet
+static volatile uint8_t h_le_fails;          // v10: BLE links in a row that dropped before ready
+// v10: reset BTstack's Device Information client, deferred to the BTstack run loop so every handler of the
+// current disconnect event (GATT client included) has finished. Resetting it from inside the event could make a
+// GATT "query complete" for the old link reach a client that no longer knows the handle (NULL -> crash).
+static btstack_context_callback_registration_t dis_reset_cb;
+static void dis_reset_now(void* ctx) {
+    ARG_UNUSED(ctx);
+    device_information_service_client_init();
+}
+static void dis_reset_later(void) {
+    dis_reset_cb.callback = dis_reset_now;
+    btstack_run_loop_execute_on_main_thread(&dis_reset_cb);   // ignored if already queued
+}
+
+static void bt_note_ready(void) {
+    h_ready_events++;
+    h_acl_pending = false;                   // v10: was never cleared, so a good connect looked "stuck"
+    h_le_pending = HCI_CON_HANDLE_INVALID;
+    h_le_fails = 0;
+}
 
 // ------------------------------------------------------------------ pairing window (v7)
 static bool pair_on;
@@ -666,8 +689,6 @@ static volatile uint32_t h_answers;          // command-complete for our ping
 static volatile uint8_t h_scan;              // last scan-enable value (bit 1 = page scan)
 static volatile uint32_t h_conn_events;      // incoming connection requests / completions
 static volatile uint32_t h_conn_failed;      // completions with error, or ACL dropped before ready
-static volatile bool h_acl_pending;          // ACL up, HID not ready yet
-static volatile uint32_t h_acl_up_at;
 
 static uint32_t h_seen_answers, h_sent_at, h_last_try, h_last_ok, h_not_ready_since;
 static bool h_waiting;
@@ -720,11 +741,40 @@ static void health_hci_handler(uint8_t packet_type, uint16_t channel, uint8_t* p
             }
             break;
         }
-        case HCI_EVENT_DISCONNECTION_COMPLETE:
+        case HCI_EVENT_LE_META:   // v10: Bluetooth LE controllers (Xbox) connect this way
+            if (hci_event_le_meta_get_subevent_code(packet) != HCI_SUBEVENT_LE_CONNECTION_COMPLETE) break;
+            hci_subevent_le_connection_complete_get_peer_address(packet, a);
+            h_conn_events++;
+            if (hci_subevent_le_connection_complete_get_status(packet)) {
+                h_conn_failed++;
+                logi("bc250: BLE connection to %s failed, status 0x%02x\n", bd_addr_to_str(a),
+                     hci_subevent_le_connection_complete_get_status(packet));
+            } else {
+                h_le_pending = hci_subevent_le_connection_complete_get_connection_handle(packet);
+                h_acl_pending = true;
+                h_acl_up_at = ms_now();
+                logi("bc250: BLE link up with %s\n", bd_addr_to_str(a));
+            }
+            break;
+        case HCI_EVENT_DISCONNECTION_COMPLETE: {
+            hci_con_handle_t h = hci_event_disconnection_complete_get_connection_handle(packet);
             logi("bc250: BT link closed, reason 0x%02x\n", hci_event_disconnection_complete_get_reason(packet));
             if (h_acl_pending) h_conn_failed++;   // dropped before the controller became ready
             h_acl_pending = false;
+            if (h != HCI_CON_HANDLE_INVALID && h == h_le_pending) {
+                // v10: a BLE link dropped before the controller was ready. If that happened during the
+                // device-info read, BTstack's single Device Information client keeps this handle and refuses
+                // every later query (0x0C), and the next link usually gets the same handle -> the controller
+                // never gets ready again. Reset that client. Only one BLE controller is set up at a time
+                // (Bluepad32 stops scanning meanwhile), so no other query is cut off.
+                h_le_pending = HCI_CON_HANDLE_INVALID;
+                dis_reset_later();
+                h_le_fails++;
+                logi("bc250: BLE controller dropped before it was ready (%u in a row) - device-info client reset\n",
+                     h_le_fails);
+            }
             break;
+        }
         default:
             break;
     }
@@ -738,6 +788,8 @@ static void health_reset_counters(uint32_t t) {
     h_last_try = t;
     h_not_ready_since = 0;
     h_acl_pending = false;
+    h_le_pending = HCI_CON_HANDLE_INVALID;
+    h_le_fails = 0;
     h_win_start = 0;
 }
 
@@ -872,6 +924,11 @@ bool bt_health_task(uint32_t t) {
     if (h_acl_pending && t - h_acl_up_at >= BT_CONNECT_STUCK_MS) {
         h_acl_pending = false;
         return health_fail("controller linked up but never became ready");
+    }
+    // ---- v10: BLE controller keeps dropping before it is ready (no time window: reconnects can be minutes apart)
+    if (h_le_fails >= BT_LE_FAILS_MAX) {
+        h_le_fails = 0;
+        return health_fail("BLE controller keeps dropping before it is ready");
     }
     // ---- a controller keeps knocking without getting in
     if (!h_win_start && (h_conn_events != h_win_events0 || h_conn_failed != h_win_failed0)) {

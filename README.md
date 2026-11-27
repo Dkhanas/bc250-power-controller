@@ -10,7 +10,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
   Wi-Fi runs only when you want it: on request (default), only while the console is off, always, or never
 - **Low-battery warning:** the controller rumbles and the button LED blinks when a DualSense / DualShock is at 20 % or less
 - **Case button held 8 s (console off):** Wi-Fi on for the phone page
-- **Case button held 2 s:** pairing window, which accepts a new controller for 60 s. Outside it, controllers in
+- **Case button double-click:** pairing window, which accepts a new controller for 60 s. Outside it, controllers in
   pairing mode are ignored, so you can still pair yours with a phone or PC
 - **Bluetooth controller** (DualSense, DS4, Switch Pro, Xbox, 8BitDo…): pressing PS / Xbox / Home wakes the board,
   and the controller is passed to the BC-250 over USB (as itself, or as an Xbox 360 pad)
@@ -36,8 +36,8 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
 
 ## Quick start
 
-1. **Flash (once, over USB):** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v9.uf2`
-   onto the `RP2350` drive (or `bc250_power_v9_ha.uf2` if you use Home Assistant) and leave it plugged in for 10 s.
+1. **Flash (once, over USB):** hold BOOTSEL on the Pico, plug it into a PC, copy `firmware/release/bc250_power_v10.uf2`
+   onto the `RP2350` drive (or `bc250_power_v10_ha.uf2` if you use Home Assistant) and leave it plugged in for 10 s.
    Later versions: from the phone page, Settings → Firmware (see [`firmware/README.md`](firmware/README.md#flash-it)).
 2. **BC-250:** AUTO_PWRON jumper on pins 1–2; SteamOS `HandlePowerKey=poweroff`.
 3. **Wire** per [`docs/build-plan.md`](docs/build-plan.md) (Pico GP15 -> PSU, GP17 <- button, GP16 -> LED, GP2 <- TPM pin 9).
@@ -82,7 +82,7 @@ A Raspberry Pi Pico 2 W sits on the ATX power supply's 5 V standby rail and:
   lightbar and adaptive triggers.
 - **No audio:** the DualSense / DS4 headphone jack, speaker and mic aren't passed through.
 - **Up to 4 controllers. Only Bluetooth ones work**: no wired controllers through the Pico, and no non-Bluetooth Xbox One pads.
-- **New controllers only pair while the pairing window is open** (case button held 2 s). Bluetooth LE controllers
+- **New controllers only pair while the pairing window is open** (double-click the case button). Bluetooth LE controllers
   already bonded to the Pico (e.g. Xbox) are still taken when put in pairing mode, because they reconnect the same way.
 - **Pairing a controller turns the BC-250 on.** For 20 s after a shutdown, controllers that reconnect are ignored,
   so a quick press of PS right after power-off does nothing.

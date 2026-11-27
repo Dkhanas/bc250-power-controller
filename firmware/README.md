@@ -9,8 +9,8 @@ over USB**; after that, updates come from the page.
    power and only checks BOOTSEL at power-up.
 2. Hold BOOTSEL, plug the Pico into a PC → it shows up as a USB drive `RP2350`. Release BOOTSEL.
 3. Copy **one** firmware file from `release/` onto it. The drive disappears; the Pico runs the new firmware.
-   - `bc250_power_v9.uf2` – normal firmware (phone page, no Home Assistant).
-   - `bc250_power_v9_ha.uf2` – the same plus **Home Assistant** (MQTT). Only if you run Home Assistant.
+   - `bc250_power_v10.uf2` – normal firmware (phone page, no Home Assistant).
+   - `bc250_power_v10_ha.uf2` – the same plus **Home Assistant** (MQTT). Only if you run Home Assistant.
 
    You can switch between the two at any time; settings and paired controllers stay.
 4. **First time with v9:** leave it plugged in for **10 seconds**. The firmware sets up the two firmware slots that
@@ -103,8 +103,9 @@ All timings, pins, LED brightness and the controller limit are in `src/config.h`
 Everything the firmware does goes into a 16 KB RAM log that survives a Pico self-restart (cleared when the PSU is
 unplugged). **Don't unplug the PSU before reading it** when something went wrong.
 - **On the BC-250** (while no controller is connected), in Konsole: `sudo cat /dev/ttyACM0` prints the log, then
-  new lines live (Ctrl+C to stop). Commands, from a second Konsole: `echo s | sudo tee /dev/ttyACM0` (status line),
-  `p` (open pairing window), `r` (restart Bluetooth, for testing), `c` (clear log), `h` (help).
+  new lines live (Ctrl+C to stop). Commands: `echo s | sudo tee /dev/ttyACM0` (status line),
+  `p` (open pairing window), `r` (restart Bluetooth), `c` (clear log), `h` (help). From v10 they work on their own;
+  up to v9 only while `sudo cat /dev/ttyACM0` runs in a second window.
 - **UART:** GP0 (pin 1) TX, 115200 baud, with a 3.3 V USB-serial adapter (optional).
 - A status line is logged every 5 min: state, PSU, USB, Bluetooth health, restarts, restored keys, connected pads.
 
@@ -271,7 +272,7 @@ the page. From v9 the same happens by itself when the Pico gets power (PSU plugg
   your Wi-Fi can use the buttons.
 - If `bc250.local` doesn't open (some Android phones), use the address shown in your router's device list ("bc250").
 
-### Home Assistant (optional, `bc250_power_v9_ha.uf2` only)
+### Home Assistant (optional, `bc250_power_v10_ha.uf2` only)
 Needs the Home Assistant firmware file; the normal one has no MQTT code and no Home Assistant section in Settings.
 Home Assistant itself can run on a Raspberry Pi 5 (Home Assistant OS); add the **Mosquitto broker** add-on and the
 **MQTT** integration. For Apple Home, add Home Assistant's **HomeKit Bridge** integration and include the BC-250's
@@ -385,3 +386,32 @@ also after a rollback), Wi-Fi turns on for 30 min after the last use of the page
 button 8 s. So a freshly flashed Pico offers `BC250-setup` straight away, and a set-up one is reachable at
 `http://bc250.local` after a power cut. The "Never" mode skips the power-up case (a firmware install still turns it
 on, to show the result). Log: `wifi: power-on` / `wifi: new firmware`, then `wifi: turned on for 30 min`.
+
+## v10 changes (27 Nov 2026) - Bluetooth LE (Xbox) reconnect fix
+Seen on the real build with v9: the Xbox controller went to sleep while the console was running. On the next
+reconnect the link dropped (reason 0x08) while the Pico was reading the controller's device info. After that,
+every reconnect looked connected but did nothing, and the controller switched off after 20 s:
+```
+Re-encryption complete, success
+Requesting device information
+Failed to set device information client: 0xc
+Device cannot connect in time, deleting:
+```
+Cause: BTstack's Device Information client (`device_information_service_client.c`) has a single client. If the
+link drops in the middle of its read, it keeps the old connection handle. The next BLE link gets the same handle
+(0x40), so every new query is refused with 0x0C. Bluepad32 (`uni_bt_le.c`) only logs that and never starts the HID
+part. The v5 self-repair didn't notice, because it only counted Classic connections (`conn_fail=0`).
+- **Reset on drop:** when a BLE controller drops before it is ready, the Pico resets the Device Information client
+  (`device_information_service_client_init()`). The reset is deferred to the BTstack run loop, so it runs after
+  every handler of that disconnect. Log: `BLE controller dropped before it was ready (N in a row) - device-info
+  client reset`.
+- **Self-repair sees BLE:** BLE connection completes and failures are counted (`bc250: BLE link up with ...`).
+  `BT_LE_FAILS_MAX` (2) drops in a row before ready, however far apart, restart Bluetooth. A controller that gets
+  ready resets the count. The usual limit of 3 Bluetooth restarts per 30 min applies.
+- **Fix:** the "linked up but not ready" flag is now cleared when a controller becomes ready. Before, a good Classic
+  connect could trigger a Bluetooth restart 20 s later.
+- **Log port:** commands are read even when nobody holds the port open, so `echo r | sudo tee /dev/ttyACM0` works
+  on its own. Lines starting with `[` (the log echoed back by the terminal) are ignored.
+- Setting: `BT_LE_FAILS_MAX` in `src/config.h`.
+- Workaround on v9: with the controller off, run `sudo cat /dev/ttyACM0` in one window and
+  `echo r | sudo tee /dev/ttyACM0` in a second, then press Xbox.

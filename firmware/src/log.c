@@ -84,9 +84,10 @@ void log_task(void) {
         help();
     }
     was_connected = conn;
-    if (!conn) return;
 
     // commands: one per line ("s", "p", ... or "wifi ...", "mqtt ...", "pin ...", "net")
+    // v10: read them even when no one holds the port open (DTR low), so a one-shot
+    // `echo r | sudo tee /dev/ttyACM0` works without `cat` running; the answers go to the log.
     static char line[160];
     static uint8_t ll;
     while (tud_cdc_available()) {
@@ -99,6 +100,7 @@ void log_task(void) {
         if (!ll) continue;
         line[ll] = 0;
         ll = 0;
+        if (line[0] == '[') continue;   // v10: our own log line echoed back by the host's tty - ignore quietly
         if (settings_command(line)) continue;   // never echoes the line (passwords)
         if (line[1] == 0) {
             switch (line[0]) {
@@ -132,6 +134,8 @@ void log_task(void) {
             printf("bc250: unknown command (h = help)\n");
         }
     }
+
+    if (!conn) return;   // nobody reading: keep the log for the next `cat`
 
     // stream new log bytes
     uint32_t total = ring.total;
